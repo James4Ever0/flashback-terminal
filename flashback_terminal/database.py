@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from flashback_terminal.logger import Logger, log_function, logger
+
 
 @dataclass
 class Session:
@@ -161,16 +163,20 @@ class Database:
 
             conn.commit()
 
+    @log_function(Logger.DEBUG)
     def create_session(
         self, uuid: str, name: str, profile_name: str, metadata: Optional[Dict] = None
     ) -> int:
+        logger.debug(f"Creating session: uuid={uuid}, name={name}, profile={profile_name}")
         with self._connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO sessions (uuid, name, profile_name, metadata) VALUES (?, ?, ?, ?)",
                 (uuid, name, profile_name, json.dumps(metadata or {})),
             )
             conn.commit()
-            return cursor.lastrowid
+            session_id = cursor.lastrowid
+            logger.info(f"Session created: id={session_id}, uuid={uuid}")
+            return session_id
 
     def get_session(self, session_id: int) -> Optional[Session]:
         with self._connect() as conn:

@@ -1,0 +1,191 @@
+# flashback-terminal example configuration
+# Copy this file to ~/.config/flashback-terminal/config.yaml and modify as needed
+
+# Logging configuration
+logging:
+  # Verbosity level: 0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE
+  verbosity: 2
+  # Whether to also log to a file
+  log_to_file: false
+  # Path to log file (null = auto-generate in data_dir)
+  log_file: null
+
+# Data storage paths
+data_dir: "~/.local/share/flashback-terminal"
+
+# Server configuration
+server:
+  host: "127.0.0.1"
+  port: 8080
+  # WebSocket settings
+  ws_ping_interval: 20
+  ws_ping_timeout: 10
+
+# Terminal settings
+terminal:
+  # Default terminal size
+  rows: 24
+  cols: 80
+  # Shell to use (null = use $SHELL or /bin/bash)
+  shell: null
+  # Environment variables to set
+  env: {}
+  # Whether to use login shell (-l flag)
+  login_shell: true
+
+# Session manager configuration
+# Controls how terminal sessions are managed and captured
+session_manager:
+  # Mode: "local" | "screen" | "tmux"
+  #   - local: Direct PTY fork (default, no external dependencies)
+  #   - screen: Use GNU Screen for session management
+  #   - tmux: Use Tmux for session management
+  mode: local
+
+  # Local mode settings (used when mode="local")
+  local:
+    use_pty: true
+
+  # GNU Screen settings (used when mode="screen")
+  screen:
+    # Directory for screen sockets
+    socket_dir: "~/.flashback-terminal/screen"
+    # Screen binary name or path
+    binary: "screen"
+
+  # Tmux settings (used when mode="tmux")
+  tmux:
+    # Directory for tmux sockets
+    socket_dir: "~/.flashback-terminal/tmux"
+    # Tmux binary name or path
+    binary: "tmux"
+    # Custom tmux config file (null = use default)
+    config_file: null
+    # Environment variables to unset for nested session support
+    nested_session_env:
+      TMUX: ""
+      TMUX_PANE: ""
+      TMUX_WINDOW: ""
+      TMUX_SESSION: ""
+
+  # Backend session capture settings
+  # When using screen/tmux, captures can be taken server-side
+  capture:
+    enabled: true
+    interval_seconds: 10
+    max_captures_per_session: 1000
+    capture_full_scrollback: true
+
+# Worker configuration - enable/disable and set intervals
+workers:
+  embedding:
+    enabled: false
+    work_interval_seconds: 1
+    batch_size: 10
+    # EMBEDDING MODE
+    # Options: 'text-only', 'disabled'
+    mode: "text-only"
+    # TEXT EMBEDDING CONFIG
+    # Any OpenAI-compatible embedding API
+    text:
+      base_url: "https://api.openai.com/v1"
+      api_key: "${OPENAI_API_KEY}"
+      model: "text-embedding-3-small"
+      dimension: null  # REQUIRED: Run 'flashback-terminal config test-embedding --write'
+      extra_headers: {}
+    # Chunking settings
+    chunk_size: 512
+    chunk_overlap: 50
+
+  retention:
+    enabled: true
+    check_interval_seconds: 3600
+    # Strategy: "delete" | "archive"
+    # - delete: Permanently remove old sessions
+    # - archive: Move to archive storage (can be restored later)
+    strategy: "archive"
+    # History retention period
+    history_days: 10
+    # Archive constraints (only used when strategy="archive")
+    archive:
+      # Max total size of all archives (bytes, 0 = unlimited)
+      total_size_limit: 10737418240  # 10 GB
+      # Max age of archives before forced deletion (days, 0 = unlimited)
+      max_age_days: 90
+      # Compression format: "gzip" | "bz2" | "xz" | null
+      compression: "gzip"
+      # Archive organization: "flat" | "monthly" | "yearly"
+      organization: "monthly"
+
+  cwd_tracker:
+    enabled: true
+    # Method: "pwd_injection" | "parse_prompt"
+    method: "pwd_injection"
+    injection_interval_ms: 5000
+
+# Module toggles (all features are optional)
+modules:
+  history_keeper:
+    enabled: true
+    buffer_size_lines: 100
+    use_fts: true
+
+  screenshot_capture:
+    enabled: true
+    max_per_session: 1000
+    max_file_size_mb: 5
+    formats: ["png", "jpeg"]
+
+  semantic_search:
+    enabled: false
+    text_weight: 0.7
+    bm25_weight: 0.3
+    rrf_k: 60
+
+  session_recovery:
+    enabled: true
+    max_recovery_age_days: 30
+    replay_mode: "instant"
+
+# Search configuration
+search:
+  enabled_methods:
+    bm25: true
+    embedding: false
+    regex: true
+  bm25:
+    k1: 1.5
+    b: 0.75
+    default_limit: 50
+  embedding:
+    default_limit: 50
+  context_lines: 3
+
+# Web UI configuration
+webui:
+  enabled: true
+  theme: "dark"
+  font_family: "'Courier New', monospace"
+  font_size: 14
+
+# Profile presets for new terminals
+profiles:
+  - name: "default"
+    shell: null
+    args: []
+    env: {}
+    cwd: "~"
+    description: "Standard shell"
+
+  - name: "python"
+    shell: "/usr/bin/python3"
+    args: ["-i"]
+    env:
+      PYTHONSTARTUP: "~/.pythonrc"
+    cwd: "~"
+    description: "Python REPL"
+
+# Validation settings
+validation:
+  check_embedding_dimension: true
+  halt_on_embedding_error: false

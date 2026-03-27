@@ -1,7 +1,66 @@
 // flashback-terminal frontend application
+// Verbosity level injected by server via Jinja2: window.VERBOSITY_LEVEL
+
+// Frontend logger with verbosity control
+const FrontendLogger = {
+    // Verbosity levels (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE)
+    ERROR: 0,
+    WARN: 1,
+    INFO: 2,
+    DEBUG: 3,
+    TRACE: 4,
+
+    // Get verbosity from server-injected value or default to INFO
+    getVerbosity() {
+        return (typeof window !== 'undefined' && window.VERBOSITY_LEVEL !== undefined)
+            ? window.VERBOSITY_LEVEL
+            : 2;
+    },
+
+    shouldLog(level) {
+        return this.getVerbosity() >= level;
+    },
+
+    log(level, levelName, ...args) {
+        if (!this.shouldLog(level)) return;
+
+        const timestamp = new Date().toISOString();
+        const prefix = `[${timestamp}] [${levelName}] [Frontend]`;
+
+        if (level === this.ERROR) {
+            console.error(prefix, ...args);
+        } else if (level === this.WARN) {
+            console.warn(prefix, ...args);
+        } else {
+            console.log(prefix, ...args);
+        }
+    },
+
+    error(...args) { this.log(this.ERROR, 'ERROR', ...args); },
+    warn(...args) { this.log(this.WARN, 'WARN', ...args); },
+    info(...args) { this.log(this.INFO, 'INFO', ...args); },
+    debug(...args) { this.log(this.DEBUG, 'DEBUG', ...args); },
+    trace(...args) { this.log(this.TRACE, 'TRACE', ...args); },
+
+    // Log function entry/exit
+    logFunction(funcName, params = null) {
+        if (this.shouldLog(this.TRACE)) {
+            this.trace(`[ENTER] ${funcName}`, params ? `params=${JSON.stringify(params)}` : '');
+        }
+        return () => {
+            if (this.shouldLog(this.TRACE)) {
+                this.trace(`[EXIT] ${funcName}`);
+            }
+        };
+    }
+};
+
+// Log initial verbosity
+FrontendLogger.info(`Frontend initialized with verbosity level ${FrontendLogger.getVerbosity()}`);
 
 class TerminalTab {
     constructor(uuid, name) {
+        FrontendLogger.debug(`TerminalTab constructor: uuid=${uuid}, name=${name}`);
         this.uuid = uuid;
         this.name = name;
         this.terminal = null;
@@ -11,6 +70,9 @@ class TerminalTab {
     }
 
     async connect() {
+        FrontendLogger.info(`Connecting terminal tab: uuid=${this.uuid}`);
+        const exitLog = FrontendLogger.logFunction('TerminalTab.connect', { uuid: this.uuid });
+
         this.terminal = new Terminal({
             fontFamily: "'Courier New', monospace",
             fontSize: 14,
@@ -33,17 +95,18 @@ class TerminalTab {
         this.socket = new WebSocket(wsUrl);
 
         this.socket.onopen = () => {
-            console.log('WebSocket connected');
+            FrontendLogger.info(`WebSocket connected: uuid=${this.uuid}`);
             this.startScreenshotCapture();
         };
 
         this.socket.onmessage = (event) => {
+            FrontendLogger.trace('WebSocket message received:', event.data.substring(0, 200));
             const msg = JSON.parse(event.data);
             this.handleMessage(msg);
         };
 
         this.socket.onclose = () => {
-            console.log('WebSocket closed');
+            FrontendLogger.info(`WebSocket closed: uuid=${this.uuid}`);
             this.stopScreenshotCapture();
         };
 
@@ -148,12 +211,19 @@ class TerminalTab {
 
 class App {
     constructor() {
+        FrontendLogger.debug('App constructor');
         this.tabs = [];
         this.activeTab = null;
     }
 
     async init() {
-        document.getElementById('btn-new-tab').addEventListener('click', () => this.createTab());
+        FrontendLogger.info('App initializing...');
+        const exitLog = FrontendLogger.logFunction('App.init');
+
+        document.getElementById('btn-new-tab').addEventListener('click', () => {
+            FrontendLogger.debug('New tab button clicked');
+            this.createTab();
+        });
         document.getElementById('btn-search').addEventListener('click', () => this.openSearch());
         document.getElementById('btn-sessions').addEventListener('click', () => this.openSessions());
 
@@ -169,12 +239,22 @@ class App {
     }
 
     async createTab() {
+        FrontendLogger.info('Creating new tab...');
+        const exitLog = FrontendLogger.logFunction('App.createTab');
+
         const response = await fetch('/api/sessions', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({profile: 'default'})
         });
+
+        if (!response.ok) {
+            FrontendLogger.error('Failed to create session:', response.statusText);
+            return;
+        }
+
         const data = await response.json();
+        FrontendLogger.info(`Session created: uuid=${data.uuid}`);
 
         const tab = new TerminalTab(data.uuid, data.name);
         this.tabs.push(tab);
@@ -215,34 +295,92 @@ class App {
         const mode = document.getElementById('search-mode').value;
         const scope = document.getElementById('search-scope').value;
 
+        FrontendLogger.info(`Search initiated: query="${query}", mode=${mode}, scope=${scope}`);
+        const exitLog = FrontendLogger.logFunction('App.doSearch', { query, mode, scope });
+
+        // Show searching feedback
+        this.renderSearchStatus('Searching...');
+
         const sessionIds = scope === 'current' && this.activeTab ? [this.activeTab.uuid] : [];
 
-        const response = await fetch('/api/search', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                query: query,
-                mode: mode,
-                scope: scope,
-                session_ids: sessionIds
-            })
-        });
+        try {
+            const response = await fetch('/api/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    query: query,
+                    mode: mode,
+                    scope: scope,
+                    session_ids: sessionIds
+                })
+            });
 
-        const data = await response.json();
-        this.renderSearchResults(data.results);
+            if (!response.ok) {
+                this.renderSearchStatus('Request failed');
+                return;
+            }
+
+            const data = await response.json();
+            this.renderSearchResults(data.results);
+        } catch (error) {
+            this.renderSearchStatus('Request failed');
+        }
+    }
+
+    renderSearchStatus(message) {
+        const container = document.getElementById('search-results');
+        container.innerHTML = `<div class="search-status">${message}</div>`;
     }
 
     renderSearchResults(results) {
         const container = document.getElementById('search-results');
-        container.innerHTML = results.map(r => `
+
+        if (!results || results.length === 0) {
+            container.innerHTML = '<div class="search-status">No results found</div>';
+            return;
+        }
+
+        const countFeedback = `<div class="search-count">${results.length} result${results.length !== 1 ? 's' : ''} found</div>`;
+
+        // Get set of running terminal UUIDs
+        const runningUuids = new Set(this.tabs.map(tab => tab.uuid));
+
+        const resultsHtml = results.map(r => {
+            const isRunning = runningUuids.has(r.session_uuid);
+            const buttonClass = isRunning ? 'jump-btn' : 'jump-btn disabled';
+            const buttonText = isRunning ? 'Jump to Terminal' : 'Terminal Not Available';
+
+            return `
             <div class="search-result">
                 <div class="result-header">
                     <span class="session-name">${r.session_name}</span>
                     <span class="timestamp">${r.timestamp}</span>
                 </div>
                 <pre class="result-content">${r.content.substring(0, 200)}...</pre>
+                <button class="${buttonClass}" data-uuid="${r.session_uuid}" ${isRunning ? '' : 'disabled'}>
+                    ${buttonText}
+                </button>
             </div>
-        `).join('');
+        `}).join('');
+
+        container.innerHTML = countFeedback + resultsHtml;
+
+        // Add click handlers for jump buttons
+        container.querySelectorAll('.jump-btn:not(.disabled)').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const uuid = e.target.getAttribute('data-uuid');
+                this.jumpToTerminal(uuid);
+            });
+        });
+    }
+
+    jumpToTerminal(uuid) {
+        const tab = this.tabs.find(t => t.uuid === uuid);
+        if (tab) {
+            this.switchTab(tab);
+            // Close search modal
+            document.getElementById('search-modal').classList.add('hidden');
+        }
     }
 
     async openSessions() {

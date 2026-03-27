@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flashback - Screenshot Search</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        h1 { font-size: 28px; color: #fff; }
+        .search-box {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        input[type="text"] {
+            flex: 1;
+            min-width: 300px;
+            padding: 12px 16px;
+            font-size: 16px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+        select, button {
+            padding: 12px 20px;
+            font-size: 14px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+        }
+        button {
+            background: #4a9eff;
+            border-color: #4a9eff;
+            font-weight: 600;
+        }
+        button:hover {
+            background: #3a8eef;
+        }
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .filters label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #888;
+            font-size: 14px;
+        }
+        .filters input[type="datetime-local"] {
+            padding: 8px 12px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+        }
+        .results-info {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        .results {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .result-card {
+            background: #1a1a1a;
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid #333;
+        }
+        .result-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            border-color: #4a9eff;
+        }
+        .result-card img {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            background: #0a0a0a;
+        }
+        .result-info {
+            padding: 15px;
+        }
+        .result-time {
+            color: #888;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .result-window {
+            color: #4a9eff;
+            font-size: 12px;
+            margin-top: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .result-score {
+            color: #4caf50;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .result-ocr {
+            color: #aaa;
+            font-size: 11px;
+            margin-top: 8px;
+            max-height: 60px;
+            overflow: hidden;
+            line-height: 1.4;
+        }
+        .neighbors {
+            margin-top: 30px;
+        }
+        .neighbors h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+        .neighbor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+        }
+        .neighbor-card {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            border: 1px solid #333;
+        }
+        .neighbor-card:hover {
+            border-color: #4a9eff;
+        }
+        .neighbor-card img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #0a0a0a;
+        }
+        .neighbor-card .time {
+            color: #888;
+            font-size: 11px;
+            margin-top: 8px;
+        }
+        .neighbor-card.center {
+            border-color: #4a9eff;
+            box-shadow: 0 0 10px rgba(74, 158, 255, 0.3);
+        }
+        .no-results {
+            text-align: center;
+            padding: 60px;
+            color: #888;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #4a9eff;
+        }
+
+        .nav-links a {
+            color: #4a9eff;
+            text-decoration: none;
+            margin-left: 20px;
+            font-size: 14px;
+        }
+        .nav-links a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Flashback</h1>
+            <div style="display: flex; align-items: center; gap: 20px; color: #888; font-size: 14px;">
+                <div class="nav-links">
+                    <a href="/timeline">Timeline</a>
+                </div>
+                <span><span id="screenshot-count">-</span> screenshots indexed</span>
+            </div>
+        </header>
+
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Search your screenshot history..." autofocus>
+            <select id="searchMode">
+                {% for method in search_methods %}
+                <option value="{{ method.id }}"{% if method.default %} selected{% endif %}>{{ method.name }}</option>
+                {% endfor %}
+            </select>
+            <button onclick="search()">Search</button>
+        </div>
+
+        <div class="filters">
+            <label>
+                From:
+                <input type="datetime-local" id="startDate">
+            </label>
+            <label>
+                To:
+                <input type="datetime-local" id="endDate">
+            </label>
+            <label>
+                Window:
+                <input type="text" id="windowFilter" placeholder="Filter by window title..." style="width: 200px;">
+            </label>
+        </div>
+
+        <div class="results-info" id="resultsInfo"></div>
+        <div class="results" id="results"></div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+
+        // HTML escape function to prevent XSS
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            const str = String(text);
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Load screenshot count on page load
+        fetch(`${API_BASE}/status`)
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('screenshot-count').textContent =
+                    data.storage?.screenshot_count || 0;
+            });
+
+        async function search() {
+            const q = document.getElementById('searchInput').value;
+            if (!q.trim()) return;
+
+            const search_mode = document.getElementById('searchMode').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            const windowFilter = document.getElementById('windowFilter').value;
+
+            const params = new URLSearchParams({ q, search_mode, limit: '20' });
+            if (startDate) params.append('from', startDate);
+            if (endDate) params.append('to', endDate);
+            if (windowFilter) params.append('window_title', windowFilter);
+
+            document.getElementById('results').innerHTML = '<div class="loading">Searching...</div>';
+
+            try {
+                const res = await fetch(`${API_BASE}/search?${params}`);
+                const data = await res.json();
+                
+                if (data.error) {
+                    document.getElementById('results').innerHTML =
+                        `<div class="no-results">Error: ${escapeHtml(data.error)}</div>`;
+                    return;
+                }
+
+                document.getElementById('resultsInfo').textContent =
+                    `${data.total} results for "${escapeHtml(data.query)}" (${escapeHtml(data.search_mode)})`;
+
+                if (!data.results || data.results.length === 0) {
+                    document.getElementById('results').innerHTML =
+                        '<div class="no-results">No results found</div>';
+                    return;
+                }
+
+                const resultsHtml = data.results.map((r, i) => `
+                    <div class="result-card" onclick="window.location.href='/screenshot/${r.id}'">
+                        <img src="${escapeHtml(r.screenshot_url)}" loading="lazy" alt="Screenshot">
+                        <div class="result-info">
+                            <div class="result-time">${escapeHtml(r.timestamp_formatted)}</div>
+                            <div class="result-window">${escapeHtml(r.window_title || 'Unknown Window')}</div>
+                            <div class="result-score">Score: ${r.score?.toFixed(3) || 'N/A'}</div>
+                            <div class="result-ocr">${escapeHtml(r.ocr_text_preview || '')}</div>
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('results').innerHTML = resultsHtml;
+            } catch (e) {
+                document.getElementById('results').innerHTML =
+                    `<div class="no-results">Error: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        // Event listeners
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') search();
+        });
+    </script>
+</body>
+</html>

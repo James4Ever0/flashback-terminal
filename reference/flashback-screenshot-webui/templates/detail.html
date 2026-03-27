@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screenshot Detail - Flashback</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        h1 { font-size: 28px; color: #fff; }
+        h1 a { color: #fff; text-decoration: none; }
+        h1 a:hover { color: #4a9eff; }
+        .back-link {
+            color: #4a9eff;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-link:hover { text-decoration: underline; }
+        .timeline-link {
+            color: #4a9eff;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .timeline-link:hover { text-decoration: underline; }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        .screenshot-container {
+            background: #1a1a1a;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #333;
+        }
+        .screenshot-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .info-panel {
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #333;
+        }
+        .info-panel h2 {
+            color: #fff;
+            font-size: 18px;
+            margin-bottom: 15px;
+        }
+        .info-item {
+            margin-bottom: 15px;
+        }
+        .info-item label {
+            display: block;
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .info-item span {
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+        .info-item a {
+            color: #4a9eff;
+            text-decoration: none;
+        }
+        .info-item a:hover {
+            text-decoration: underline;
+        }
+        .ocr-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #333;
+        }
+        .ocr-text {
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 13px;
+            color: #ccc;
+            background: #0a0a0a;
+            padding: 15px;
+            border-radius: 6px;
+            max-height: 400px;
+            overflow: auto;
+            margin-top: 10px;
+        }
+        .neighbors-section {
+            margin-top: 30px;
+        }
+        .neighbors-section h2 {
+            color: #fff;
+            font-size: 18px;
+            margin-bottom: 15px;
+        }
+        .neighbor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .neighbor-card {
+            background: #1a1a1a;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            border: 1px solid #333;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .neighbor-card:hover {
+            transform: translateY(-2px);
+            border-color: #4a9eff;
+        }
+        .neighbor-card.center {
+            border-color: #4a9eff;
+            box-shadow: 0 0 10px rgba(74, 158, 255, 0.3);
+        }
+        .neighbor-card img {
+            width: 100%;
+            height: 120px;
+            object-fit: cover;
+            background: #0a0a0a;
+        }
+        .neighbor-info {
+            padding: 10px;
+        }
+        .neighbor-time {
+            color: #888;
+            font-size: 11px;
+        }
+        .neighbor-rel {
+            color: #4a9eff;
+            font-size: 11px;
+            margin-top: 2px;
+        }
+        .loading, .error {
+            text-align: center;
+            padding: 60px;
+            color: #888;
+        }
+        .error { color: #ff6b6b; }
+        @media (max-width: 900px) {
+            .detail-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><a href="/">Flashback</a></h1>
+            <a href="/" class="back-link">&larr; Back to Search</a>
+        </header>
+
+        <div id="content">
+            <div class="loading">Loading screenshot...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+
+        // Get screenshot ID from URL path
+        function getScreenshotId() {
+            const path = window.location.pathname;
+            const match = path.match(/\/screenshot\/(\d+)/);
+            return match ? match[1] : null;
+        }
+
+        // HTML escape function to prevent XSS
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            const str = String(text);
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        async function loadScreenshot() {
+            const screenshotId = getScreenshotId();
+            if (!screenshotId) {
+                document.getElementById('content').innerHTML =
+                    '<div class="error">Screenshot ID not found in URL</div>';
+                return;
+            }
+
+            try {
+                const [detailRes, neighborsRes] = await Promise.all([
+                    fetch(`${API_BASE}/screenshots/by-id/${screenshotId}`),
+                    fetch(`${API_BASE}/screenshots/by-id/${screenshotId}/neighbors?before=5&after=5`)
+                ]);
+
+                if (detailRes.status === 404) {
+                    document.getElementById('content').innerHTML =
+                        '<div class="error">Screenshot not found</div>';
+                    return;
+                }
+
+                const detail = await detailRes.json();
+                const neighbors = await neighborsRes.json();
+
+                renderDetail(detail, neighbors);
+            } catch (e) {
+                document.getElementById('content').innerHTML =
+                    `<div class="error">Error loading screenshot: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderDetail(detail, neighbors) {
+            const neighborsHtml = neighbors.screenshots.map(n => `
+                <div class="neighbor-card ${n.is_center ? 'center' : ''}"
+                     onclick="window.location.href='/screenshot/${n.id}'">
+                    <img src="${escapeHtml(n.screenshot_url)}" loading="lazy">
+                    <div class="neighbor-info">
+                        <div class="neighbor-time">${escapeHtml(n.timestamp_formatted)}</div>
+                        <div class="neighbor-rel">${n.relative_minutes > 0 ? '+' : ''}${n.relative_minutes}m</div>
+                    </div>
+                </div>
+            `).join('');
+
+            const ocrSection = detail.ocr_text_full ? `
+                <div class="ocr-section">
+                    <h2>OCR Text</h2>
+                    <div class="ocr-text">${escapeHtml(detail.ocr_text_full)}</div>
+                </div>
+            ` : '';
+
+            document.getElementById('content').innerHTML = `
+                <div class="detail-grid">
+                    <div class="screenshot-container">
+                        <img src="${escapeHtml(detail.screenshot_url)}" alt="Screenshot">
+                    </div>
+                    <div class="info-panel">
+                        <h2>Screenshot Details</h2>
+                        <div class="info-item">
+                            <label>ID</label>
+                            <span>${detail.id}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Timestamp</label>
+                            <span>${escapeHtml(detail.timestamp_formatted)}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Actions</label>
+                            <span><a href="/timeline?time=${detail.timestamp}" class="timeline-link">View in Timeline</a></span>
+                        </div>
+                        <div class="info-item">
+                            <label>Window Title</label>
+                            <span>${escapeHtml(detail.window_title || 'Unknown')}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Has OCR</label>
+                            <span>${detail.ocr_text_preview ? 'Yes' : 'No'}</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Has Embedding</label>
+                            <span>${detail.has_embedding ? 'Yes' : 'No'}</span>
+                        </div>
+                        ${ocrSection}
+                    </div>
+                </div>
+                <div class="neighbors-section">
+                    <h2>Timeline Context</h2>
+                    <div class="neighbor-grid">${neighborsHtml}</div>
+                </div>
+            `;
+        }
+
+        // Load on page load
+        loadScreenshot();
+    </script>
+</body>
+</html>

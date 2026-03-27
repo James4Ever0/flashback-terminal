@@ -1,0 +1,14 @@
+while true; do
+        python ccd_wayback_snyk_revised.py
+        if [ !? -eq 0 ]; then
+                echo 'exit normally'
+                exit 0
+        fi
+        echo 'sleep for 30 seconds'
+        sleep 30
+done
+~
+~
+~
+~
+                                                                                                           6,3-10        All

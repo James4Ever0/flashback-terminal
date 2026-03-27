@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeline - Flashback</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        h1 { font-size: 28px; color: #fff; }
+        h1 a { color: #fff; text-decoration: none; }
+        h1 a:hover { color: #4a9eff; }
+        .nav-links a {
+            color: #4a9eff;
+            text-decoration: none;
+            margin-left: 20px;
+            font-size: 14px;
+        }
+        .nav-links a:hover { text-decoration: underline; }
+        .timeline-controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .timeline-controls button {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+        }
+        .timeline-controls button:hover {
+            border-color: #4a9eff;
+        }
+        .timeline-controls button.primary {
+            background: #4a9eff;
+            border-color: #4a9eff;
+        }
+        .timeline-controls button.primary:hover {
+            background: #3a8eef;
+        }
+        .timeline-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .timeline-controls label {
+            color: #888;
+            font-size: 14px;
+        }
+        .timeline-controls input[type="datetime-local"],
+        .timeline-controls input[type="number"] {
+            padding: 12px 16px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 16px;
+        }
+        .timeline-controls input[type="datetime-local"] {
+            width: 260px;
+            min-width: 260px;
+        }
+        .timeline-controls input[type="number"] {
+            width: 80px;
+        }
+        .timeline-controls select {
+            padding: 8px 12px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+        }
+        .time-range-info {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+        }
+        .time-range-info .main {
+            color: #fff;
+            font-size: 16px;
+            margin-bottom: 5px;
+        }
+        .time-range-info .sub {
+            color: #888;
+            font-size: 13px;
+        }
+        .screenshot-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+        }
+        .screenshot-card {
+            background: #1a1a1a;
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid #333;
+        }
+        .screenshot-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            border-color: #4a9eff;
+        }
+        .screenshot-card img {
+            width: 100%;
+            height: 160px;
+            object-fit: cover;
+            background: #0a0a0a;
+        }
+        .screenshot-info {
+            padding: 12px;
+        }
+        .screenshot-time {
+            color: #888;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .screenshot-window {
+            color: #4a9eff;
+            font-size: 12px;
+            margin-top: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .screenshot-ocr {
+            color: #aaa;
+            font-size: 11px;
+            margin-top: 8px;
+            max-height: 40px;
+            overflow: hidden;
+            line-height: 1.4;
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #333;
+        }
+        .pagination button {
+            padding: 12px 24px;
+            font-size: 14px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+        }
+        .pagination button:hover:not(:disabled) {
+            border-color: #4a9eff;
+        }
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .no-results {
+            text-align: center;
+            padding: 60px;
+            color: #888;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #4a9eff;
+        }
+        .jump-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            border-left: 1px solid #333;
+            padding-left: 15px;
+            margin-left: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><a href="/">Flashback</a></h1>
+            <div class="nav-links">
+                <a href="/">Search</a>
+            </div>
+        </header>
+
+        <div class="timeline-controls">
+            <button class="primary" onclick="loadRecent()">Most Recent</button>
+            <button onclick="goBackPage()" id="backBtn">&larr; Back</button>
+            <button onclick="goForwardPage()" id="forwardBtn" disabled>Forward &rarr;</button>
+            <select id="pageSize" onchange="changePageSize()">
+                <option value="20">20 per page</option>
+                <option value="50" selected>50 per page</option>
+                <option value="100">100 per page</option>
+            </select>
+            <div class="jump-controls">
+                <label>Jump to:</label>
+                <input type="datetime-local" id="jumpTime">
+                <button onclick="jumpToTime()">Go</button>
+            </div>
+        </div>
+
+        <div class="time-range-info" id="timeRangeInfo" style="display: none;">
+            <div class="main" id="timeRangeMain"></div>
+            <div class="sub" id="timeRangeSub"></div>
+        </div>
+
+        <div class="screenshot-grid" id="screenshotGrid"></div>
+
+        <div class="pagination" id="pagination"></div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+
+        // State
+        let currentLimit = 50;
+        let currentResults = [];  // Store current results for pagination
+        let oldestTimestamp = null;  // Track oldest screenshot in DB
+        let viewMode = 'recent';  // 'recent', 'before', 'around'
+        let currentBeforeTime = null;  // For pagination backwards
+        let currentAroundTime = null;  // For jump mode
+
+        // HTML escape function to prevent XSS
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            const str = String(text);
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Format timestamp for display
+        function formatDateTime(timestamp) {
+            if (!timestamp) return '-';
+            return new Date(timestamp * 1000).toLocaleString();
+        }
+
+        // Format datetime-local input value
+        function formatDateTimeLocal(timestamp) {
+            const date = new Date(timestamp * 1000);
+            const pad = n => n.toString().padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        }
+
+        // Parse datetime-local to timestamp
+        function parseDateTimeLocal(str) {
+            if (!str) return null;
+            return new Date(str).getTime() / 1000;
+        }
+
+        async function loadScreenshots(params = {}) {
+            const grid = document.getElementById('screenshotGrid');
+            grid.innerHTML = '<div class="loading">Loading...</div>';
+
+            const queryParams = new URLSearchParams({
+                limit: currentLimit.toString()
+            });
+
+            if (params.before_time) {
+                queryParams.append('before_time', params.before_time);
+            }
+            if (params.around_time) {
+                queryParams.append('around_time', params.around_time);
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/screenshots/timeline?${queryParams}`);
+                const data = await res.json();
+
+                currentResults = data.results || [];
+                oldestTimestamp = data.oldest_timestamp;
+
+                renderScreenshots(currentResults);
+                updatePaginationState();
+                renderTimeRangeInfo(data);
+            } catch (e) {
+                grid.innerHTML = `<div class="no-results">Error: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderScreenshots(results) {
+            const grid = document.getElementById('screenshotGrid');
+
+            if (!results || results.length === 0) {
+                grid.innerHTML = '<div class="no-results">No screenshots found</div>';
+                return;
+            }
+
+            // Sort by timestamp descending (most recent first)
+            const sorted = [...results].sort((a, b) => b.timestamp - a.timestamp);
+
+            grid.innerHTML = sorted.map(r => `
+                <div class="screenshot-card" onclick="window.location.href='/screenshot/${r.id}'">
+                    <img src="${escapeHtml(r.screenshot_url)}" loading="lazy" alt="Screenshot">
+                    <div class="screenshot-info">
+                        <div class="screenshot-time">${escapeHtml(r.timestamp_formatted)}</div>
+                        <div class="screenshot-window">${escapeHtml(r.window_title || 'Unknown Window')}</div>
+                        <div class="screenshot-ocr">${escapeHtml(r.ocr_text_preview || '')}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderTimeRangeInfo(data) {
+            const infoBox = document.getElementById('timeRangeInfo');
+            const mainText = document.getElementById('timeRangeMain');
+            const subText = document.getElementById('timeRangeSub');
+
+            if (!currentResults || currentResults.length === 0) {
+                infoBox.style.display = 'none';
+                return;
+            }
+
+            infoBox.style.display = 'block';
+
+            const timeFrom = formatDateTime(data.time_from);
+            const timeTo = formatDateTime(data.time_to);
+            const count = currentResults.length;
+            const total = data.total;
+
+            mainText.textContent = `Showing ${count} screenshots from ${timeFrom} to ${timeTo}`;
+            subText.textContent = `Total screenshots in database: ${total}`;
+        }
+
+        function updatePaginationState() {
+            const backBtn = document.getElementById('backBtn');
+            const forwardBtn = document.getElementById('forwardBtn');
+
+            // Can go back if we have results and the oldest result is newer than the oldest in DB
+            if (currentResults.length > 0) {
+                const oldestShown = Math.min(...currentResults.map(r => r.timestamp));
+                backBtn.disabled = oldestShown <= (oldestTimestamp || 0);
+            } else {
+                backBtn.disabled = true;
+            }
+
+            // Can go forward if we're not at the most recent
+            forwardBtn.disabled = viewMode === 'recent';
+        }
+
+        function goBackPage() {
+            if (!currentResults || currentResults.length === 0) return;
+
+            // Get the oldest timestamp from current results
+            const oldestShown = Math.min(...currentResults.map(r => r.timestamp));
+
+            viewMode = 'before';
+            currentBeforeTime = oldestShown;
+            currentAroundTime = null;
+
+            loadScreenshots({ before_time: oldestShown });
+        }
+
+        function goForwardPage() {
+            if (!currentResults || currentResults.length === 0) return;
+
+            if (viewMode === 'recent') {
+                return; // Already at most recent
+            }
+
+            // Get the newest timestamp from current results
+            const newestShown = Math.max(...currentResults.map(r => r.timestamp));
+
+            // Load screenshots before a time in the future (which gives us the next batch)
+            // Actually, we need to think about this differently
+            // "Forward" means towards more recent screenshots
+            // So we need to load with a before_time that's newer than current
+
+            // For simplicity, let's just reload from recent if we're close to now
+            const now = Date.now() / 1000;
+            if (now - newestShown < 3600) { // Less than 1 hour from now
+                loadRecent();
+                return;
+            }
+
+            // Otherwise, jump forward by roughly the time span of current results
+            const oldestShown = Math.min(...currentResults.map(r => r.timestamp));
+            const span = newestShown - oldestShown;
+            const targetTime = newestShown + span;
+
+            loadScreenshots({ around_time: targetTime });
+        }
+
+        function loadRecent() {
+            viewMode = 'recent';
+            currentBeforeTime = null;
+            currentAroundTime = null;
+            loadScreenshots({});
+        }
+
+        function jumpToTime() {
+            const jumpTimeStr = document.getElementById('jumpTime').value;
+            if (!jumpTimeStr) {
+                alert('Please select a time to jump to');
+                return;
+            }
+
+            const jumpTimestamp = parseDateTimeLocal(jumpTimeStr);
+            if (!jumpTimestamp) {
+                alert('Invalid time format');
+                return;
+            }
+
+            viewMode = 'around';
+            currentAroundTime = jumpTimestamp;
+            currentBeforeTime = null;
+
+            loadScreenshots({ around_time: jumpTimestamp });
+        }
+
+        function changePageSize() {
+            currentLimit = parseInt(document.getElementById('pageSize').value);
+            // Reload with new limit
+            if (viewMode === 'recent') {
+                loadRecent();
+            } else if (viewMode === 'before' && currentBeforeTime) {
+                loadScreenshots({ before_time: currentBeforeTime });
+            } else if (viewMode === 'around' && currentAroundTime) {
+                loadScreenshots({ around_time: currentAroundTime });
+            } else {
+                loadRecent();
+            }
+        }
+
+        // Check for time query parameter on page load
+        function checkTimeQueryParam() {
+            const params = new URLSearchParams(window.location.search);
+            const timeParam = params.get('time');
+            if (timeParam) {
+                const timestamp = parseFloat(timeParam);
+                if (!isNaN(timestamp)) {
+                    // Set the jump time input
+                    const date = new Date(timestamp * 1000);
+                    const pad = n => n.toString().padStart(2, '0');
+                    const dateStr = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                    document.getElementById('jumpTime').value = dateStr;
+                    // Load screenshots around this time
+                    viewMode = 'around';
+                    currentAroundTime = timestamp;
+                    currentBeforeTime = null;
+                    loadScreenshots({ around_time: timestamp });
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Load recent screenshots on page load (or jump to time if specified)
+        if (!checkTimeQueryParam()) {
+            loadRecent();
+        }
+    </script>
+</body>
+</html>

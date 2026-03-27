@@ -88,6 +88,9 @@ flashback-terminal serve
 # Start on custom host/port
 flashback-terminal serve --host 0.0.0.0 --port 3000
 
+# Start with increased verbosity (-v, -vv, -vvv, or -vvvv)
+flashback-terminal -vvv serve
+
 # Initialize configuration
 flashback-terminal init
 
@@ -96,6 +99,23 @@ flashback-terminal check
 
 # Test embedding API configuration
 flashback-terminal config test-embedding --write
+```
+
+#### Verbosity Levels
+
+Use `-v`, `-vv`, `-vvv`, or `-vvvv` flags to control output verbosity:
+
+| Flag | Level | Description |
+|------|-------|-------------|
+| (none) | ERROR | Only show errors |
+| `-v` | WARNING | Show warnings and errors |
+| `-vv` | INFO | Show general info (default) |
+| `-vvv` | DEBUG | Show debug information |
+| `-vvvv` | TRACE | Show all details including function calls |
+
+Example with verbose logging:
+```bash
+flashback-terminal -vvvv serve --port 8080
 ```
 
 ### Web Interface
@@ -121,6 +141,12 @@ Configuration is stored in `~/.config/flashback-terminal/config.yaml`.
 ```yaml
 data_dir: "~/.local/share/flashback-terminal"
 
+# Logging verbosity: 0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE
+logging:
+  verbosity: 2
+  log_to_file: false
+  log_file: null
+
 server:
   host: "127.0.0.1"
   port: 8080
@@ -130,6 +156,24 @@ terminal:
   cols: 80
   shell: null  # Uses $SHELL by default
   login_shell: true
+
+# Session manager: local | screen | tmux
+session_manager:
+  mode: local
+  local:
+    use_pty: true
+  screen:
+    socket_dir: "~/.flashback-terminal/screen"
+    binary: "screen"
+  tmux:
+    socket_dir: "~/.flashback-terminal/tmux"
+    binary: "tmux"
+    nested_session_env:
+      TMUX: ""
+      TMUX_PANE: ""
+  capture:
+    enabled: true
+    interval_seconds: 10
 
 modules:
   history_keeper:
@@ -176,6 +220,18 @@ profiles:
 
 ### Configuration Options
 
+#### `logging`
+- `verbosity`: Logging level (0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE). Higher levels include all lower level messages.
+- `log_to_file`: Whether to also log to a file (default: false)
+- `log_file`: Path to log file (null = auto-generate in data_dir)
+
+Verbosity levels:
+- **0 (ERROR)**: Only errors
+- **1 (WARNING)**: Errors and warnings
+- **2 (INFO)**: General operational information (default)
+- **3 (DEBUG)**: Detailed debugging information, function calls
+- **4 (TRACE)**: Very detailed tracing, function entry/exit with parameters
+
 #### `data_dir`
 Base directory for all data storage (database, logs, screenshots, archives).
 
@@ -188,6 +244,50 @@ Base directory for all data storage (database, logs, screenshots, archives).
 - `cols`: Default terminal columns (default: 80)
 - `shell`: Shell command (null = use $SHELL)
 - `login_shell`: Use login shell (-l flag)
+
+#### `session_manager`
+Controls how terminal sessions are created and managed.
+
+- `mode`: Session management mode ("local", "screen", "tmux")
+  - **local**: Direct PTY fork (default, no external dependencies)
+  - **screen**: Use GNU Screen for session management
+  - **tmux**: Use Tmux for session management
+
+**Local mode options:**
+- `local.use_pty`: Use pseudo-terminal (default: true)
+
+**Screen mode options:**
+- `screen.socket_dir`: Directory for screen sockets (default: "~/.flashback-terminal/screen")
+- `screen.binary`: Screen binary name or path (default: "screen")
+
+**Tmux mode options:**
+- `tmux.socket_dir`: Directory for tmux sockets (default: "~/.flashback-terminal/tmux")
+- `tmux.binary`: Tmux binary name or path (default: "tmux")
+- `tmux.config_file`: Path to custom tmux config (null = default)
+- `tmux.nested_session_env`: Environment variables to unset for nested session support
+
+**Backend capture options (for screen/tmux):**
+- `capture.enabled`: Enable server-side session capture (default: true)
+- `capture.interval_seconds`: Capture interval (default: 10)
+- `capture.capture_full_scrollback`: Capture full scrollback history (default: true)
+
+Example session_manager configuration:
+```yaml
+session_manager:
+  mode: tmux
+  tmux:
+    socket_dir: "~/.flashback-terminal/tmux"
+    binary: "tmux"
+    config_file: null
+  capture:
+    enabled: true
+    interval_seconds: 10
+```
+
+To check if screen/tmux is installed:
+```bash
+flashback-terminal session-manager --validate
+```
 
 #### `modules.history_keeper`
 - `enabled`: Enable terminal output logging
@@ -277,6 +377,7 @@ All data is stored in `~/.local/share/flashback-terminal/`:
 flashback-terminal/
 ├── pyproject.toml
 ├── README.md
+├── config.example.yaml     # Example configuration file
 ├── flashback_terminal/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -284,16 +385,20 @@ flashback-terminal/
 │   ├── config.py           # Configuration loader
 │   ├── database.py         # Database models
 │   ├── deps.py             # Dependency checker
+│   ├── logger.py           # Logging system with verbosity
 │   ├── retention.py        # Retention management
 │   ├── search.py           # Search functionality
 │   ├── server.py           # FastAPI application
-│   ├── terminal.py         # PTY management
+│   ├── session_manager.py  # Session management (local/screen/tmux)
+│   ├── terminal.py         # Terminal session wrapper
 │   ├── api/
 │   │   └── websocket.py    # WebSocket handler
 │   ├── workers/
 │   │   └── embedding_worker.py
+│   ├── templates/          # Jinja2 templates
+│   │   └── index.html      # Main UI template
 │   └── static/
-│       ├── index.html
+│       ├── index.html      # Fallback static HTML
 │       ├── css/
 │       │   └── style.css
 │       └── js/
@@ -339,6 +444,53 @@ profiles:
 4. Initialize in `server.py` lifespan
 
 ## FAQ
+
+### Q: What session manager should I use?
+
+A: flashback-terminal supports three session management modes:
+
+1. **local** (default): Direct PTY fork - works everywhere, no dependencies
+2. **tmux**: Uses tmux for session management - enables backend screenshot capture
+3. **screen**: Uses GNU Screen - enables backend screenshot capture
+
+To use tmux or screen:
+```bash
+# Install tmux
+sudo apt-get install tmux
+
+# Configure flashback-terminal
+flashback-terminal init
+# Edit ~/.config/flashback-terminal/config.yaml:
+# session_manager:
+#   mode: tmux
+```
+
+### Q: Why use tmux/screen instead of local mode?
+
+A: Using tmux or screen enables:
+- **Backend screenshot capture**: Server can capture terminal content without frontend
+- **Session persistence**: Sessions survive browser disconnections
+- **Better resource management**: External process handles the terminal
+
+### Q: How do I check if tmux/screen is installed?
+
+A: Run the validation command:
+```bash
+flashback-terminal session-manager --validate
+```
+
+Or check manually:
+```bash
+which tmux
+which screen
+```
+
+### Q: Can I run flashback-terminal inside tmux?
+
+A: Yes! When configured to use tmux mode, flashback-terminal automatically:
+- Unsets TMUX environment variable for nested sessions
+- Uses custom socket paths to avoid conflicts
+- Configures tmux to work independently
 
 ### Q: How do I enable semantic search?
 

@@ -1,12 +1,5 @@
 """PTY terminal management for flashback-terminal."""
 
-import fcntl
-import os
-import pty
-import select
-import signal
-import struct
-import termios
 import uuid as uuid_mod
 from datetime import datetime
 from pathlib import Path
@@ -14,10 +7,16 @@ from typing import Any, Callable, Dict, Optional
 
 from flashback_terminal.config import get_config
 from flashback_terminal.database import Database
+from flashback_terminal.logger import Logger, log_function, logger
+from flashback_terminal.session_manager import (
+    BaseSession,
+    SessionManager,
+    SessionCapture,
+)
 
 
 class TerminalSession:
-    """Manages a single PTY terminal session."""
+    """Manages a single terminal session (wrapper around BaseSession)."""
 
     def __init__(
         self,
@@ -33,79 +32,13 @@ class TerminalSession:
         self.on_output = on_output
         self.profile = profile
 
-        self.pid: Optional[int] = None
-        self.fd: Optional[int] = None
+        self._session: Optional[BaseSession] = None
         self.sequence_num = 0
         self._cwd: Optional[str] = None
         self._running = False
 
-    def start(self) -> bool:
-        """Start the terminal session."""
-        config = get_config()
-
-        shell = self.profile.get("shell") or os.environ.get("SHELL", "/bin/bash")
-        args = self.profile.get("args", [])
-        cwd = Path(self.profile.get("cwd", "~")).expanduser()
-        env = {**os.environ, **self.profile.get("env", {})}
-
-        if self.profile.get("login_shell", True):
-            shell_name = os.path.basename(shell)
-            args = [f"-{shell_name}"] + args
-
-        try:
-            self.pid, self.fd = pty.fork()
-
-            if self.pid == 0:
-                os.chdir(cwd)
-                os.execvpe(shell, [shell] + args, env)
-            else:
-                self._running = True
-                self.resize(config.get("terminal.rows", 24), config.get("terminal.cols", 80))
-                return True
-        except Exception as e:
-            print(f"[TerminalSession] Failed to start: {e}")
-            return False
-
-    def resize(self, rows: int, cols: int) -> None:
-        """Resize the terminal."""
-        if self.fd is not None:
-            try:
-                size = struct.pack("HHHH", rows, cols, 0, 0)
-                fcntl.ioctl(self.fd, termios.TIOCSWINSZ, size)
-            except Exception as e:
-                print(f"[TerminalSession] Resize error: {e}")
-
-    def write(self, data: str) -> None:
-        """Write data to the terminal."""
-        if self.fd is not None and self._running:
-            try:
-                os.write(self.fd, data.encode())
-            except Exception as e:
-                print(f"[TerminalSession] Write error: {e}")
-
-    def read(self, timeout: float = 0.1) -> Optional[str]:
-        """Read data from the terminal."""
-        if self.fd is None or not self._running:
-            return None
-
-        try:
-            ready, _, _ = select.select([self.fd], [], [], timeout)
-            if ready:
-                data = os.read(self.fd, 4096)
-                if data:
-                    text = data.decode("utf-8", errors="replace")
-                    self._log_output(text)
-                    return text
-                else:
-                    self._running = False
-        except Exception as e:
-            print(f"[TerminalSession] Read error: {e}")
-            self._running = False
-
-        return None
-
-    def _log_output(self, content: str) -> None:
-        """Log terminal output to database."""
+    def _on_session_output(self, content: str) -> None:
+        """Handle output from underlying session."""
         config = get_config()
 
         if config.is_module_enabled("history_keeper"):
@@ -117,56 +50,100 @@ class TerminalSession:
         if self.on_output:
             self.on_output(content)
 
+    @log_function(Logger.DEBUG)
+    def start(self) -> bool:
+        """Start the terminal session."""
+        logger.info(f"Starting terminal session: uuid={self.uuid}, profile={self.profile.get('name', 'default')}")
+
+        config = get_config()
+        session_manager = SessionManager()
+
+        self._session = session_manager.create_session(
+            session_id=self.uuid,
+            name=f"Terminal-{self.session_id}",
+            profile=self.profile,
+            on_output=self._on_session_output,
+        )
+
+        if self._session:
+            self._running = True
+            logger.info(f"Terminal session started: uuid={self.uuid}")
+            return True
+        else:
+            logger.error(f"Failed to start terminal session: uuid={self.uuid}")
+            return False
+
+    def resize(self, rows: int, cols: int) -> None:
+        """Resize the terminal."""
+        if self._session:
+            self._session.resize(rows, cols)
+
+    def write(self, data: str) -> None:
+        """Write data to the terminal."""
+        if self._session and self._running:
+            self._session.write(data)
+
+    def read(self, timeout: float = 0.1) -> Optional[str]:
+        """Read data from the terminal."""
+        if self._session is None or not self._running:
+            return None
+
+        data = self._session.read(timeout)
+        if data is None and not self._session.is_running():
+            self._running = False
+        return data
+
     def update_cwd(self, cwd: str) -> None:
         """Update the current working directory."""
         self._cwd = cwd
+        if self._session:
+            self._session.update_cwd(cwd)
         self.db.update_session(self.session_id, last_cwd=cwd)
 
     def get_cwd(self) -> Optional[str]:
         """Get the current working directory."""
+        if self._session:
+            return self._session.get_cwd()
         return self._cwd
 
     def is_running(self) -> bool:
         """Check if the session is still running."""
-        if self.pid and self._running:
-            try:
-                pid, _ = os.waitpid(self.pid, os.WNOHANG)
-                if pid == 0:
-                    return True
-            except Exception:
-                pass
+        if self._session and self._running:
+            return self._session.is_running()
         return False
+
+    def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
+        """Capture session content (for backend screenshots)."""
+        if self._session:
+            return self._session.capture(full_scrollback)
+        return None
 
     def stop(self) -> None:
         """Stop the terminal session."""
         self._running = False
-        if self.pid:
-            try:
-                os.kill(self.pid, signal.SIGTERM)
-            except Exception:
-                pass
-        if self.fd:
-            try:
-                os.close(self.fd)
-            except Exception:
-                pass
+        if self._session:
+            self._session.stop()
 
 
 class TerminalManager:
     """Manages multiple terminal sessions."""
 
+    @log_function(Logger.DEBUG)
     def __init__(self, db: Database):
         self.db = db
         self.sessions: Dict[str, TerminalSession] = {}
         self.config = get_config()
+        logger.debug("TerminalManager initialized")
 
+    @log_function(Logger.DEBUG)
     def create_session(
         self, profile_name: str = "default", name: Optional[str] = None
     ) -> Optional[TerminalSession]:
         """Create a new terminal session."""
+        logger.info(f"Creating session: profile={profile_name}, name={name}")
         profile = self.config.get_profile(profile_name)
         if not profile:
-            print(f"[TerminalManager] Profile not found: {profile_name}")
+            logger.error(f"Profile not found: {profile_name}")
             return None
 
         uuid_str = str(uuid_mod.uuid4())
@@ -205,3 +182,14 @@ class TerminalManager:
                 ended_at=datetime.now().isoformat(),
             )
             del self.sessions[uuid]
+
+    def capture_session(
+        self,
+        uuid: str,
+        full_scrollback: bool = False,
+    ) -> Optional[SessionCapture]:
+        """Capture a session's content."""
+        session = self.sessions.get(uuid)
+        if session:
+            return session.capture(full_scrollback)
+        return None

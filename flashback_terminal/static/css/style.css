@@ -152,6 +152,43 @@ button:hover {
     color: #ccc;
 }
 
+.search-status {
+    padding: 16px;
+    text-align: center;
+    color: #888;
+    font-style: italic;
+}
+
+.search-count {
+    padding: 8px 0;
+    color: #4a9;
+    font-size: 14px;
+    font-weight: bold;
+    border-bottom: 1px solid #444;
+    margin-bottom: 8px;
+}
+
+.jump-btn {
+    margin-top: 8px;
+    padding: 6px 12px;
+    background: #4a9;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.jump-btn:hover {
+    background: #5ba;
+}
+
+.jump-btn.disabled {
+    background: #555;
+    color: #888;
+    cursor: not-allowed;
+}
+
 /* Session list styles */
 .session-item {
     display: flex;

@@ -9,28 +9,83 @@ import uvicorn
 
 from flashback_terminal.config import USER_CONFIG_DIR, USER_CONFIG_PATH, get_config
 from flashback_terminal.deps import DependencyChecker
+from flashback_terminal.logger import Logger
+
+
+def setup_logging_from_config():
+    """Setup logging based on configuration."""
+    cfg = get_config()
+    verbosity = cfg.verbosity
+    Logger.set_verbosity(verbosity)
+    return verbosity
 
 
 @click.group()
 @click.version_option(version="0.1.0")
-def cli():
-    """flashback-terminal - Recoverable web terminal with semantic search."""
-    pass
+@click.option(
+    "-v", "--verbose",
+    count=True,
+    default=0,
+    help="Increase verbosity level (use -v, -vv, -vvv, or -vvvv). "
+         "0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE"
+)
+@click.option(
+    "--config", "-c",
+    type=click.Path(),
+    help="Path to config file"
+)
+@click.pass_context
+def cli(ctx, verbose, config):
+    """flashback-terminal - Recoverable web terminal with semantic search.
+
+    Verbosity levels:
+      (none)  - Show errors only
+      -v      - Show warnings
+      -vv     - Show info messages (default)
+      -vvv    - Show debug messages
+      -vvvv   - Show trace messages (all details)
+    """
+    # Store config path in context for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj['config_path'] = config
+
+    # Setup logging
+    if config:
+        get_config(Path(config))
+
+    cfg = get_config()
+
+    # Command line verbosity overrides config
+    if verbose > 0:
+        Logger.set_verbosity(verbose)
+    else:
+        Logger.set_verbosity(cfg.verbosity)
 
 
 @cli.command()
-@click.option("--host", default=None, help="Server host")
-@click.option("--port", default=None, type=int, help="Server port")
-@click.option("--config", "-c", type=click.Path(), help="Path to config file")
-def serve(host, port, config):
+@click.option("--host", default=None, help="Server host (overrides config)")
+@click.option("--port", default=None, type=int, help="Server port (overrides config)")
+@click.pass_context
+def serve(ctx, host, port):
     """Start the flashback-terminal server."""
-    config_path = Path(config) if config else None
+    from flashback_terminal.logger import log_function, logger
+
+    config_path = ctx.obj.get('config_path') if ctx.obj else None
+    if config_path:
+        config_path = Path(config_path)
+
     cfg = get_config(config_path)
+    setup_logging_from_config()
+
+    logger.info("Starting flashback-terminal server")
+    logger.debug(f"Config path: {config_path or 'default'}")
 
     DependencyChecker.check_all()
 
     server_host = host or cfg.server_host
     server_port = port or cfg.server_port
+
+    logger.info(f"Server configured for {server_host}:{server_port}")
 
     click.echo(f"Starting flashback-terminal on http://{server_host}:{server_port}")
 
@@ -40,15 +95,26 @@ def serve(host, port, config):
 
 
 @cli.command()
-def init():
+@click.pass_context
+def init(ctx):
     """Initialize flashback-terminal configuration."""
+    from flashback_terminal.logger import logger
+
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Initializing configuration at {USER_CONFIG_DIR}")
 
     if USER_CONFIG_PATH.exists():
         click.echo(f"Config already exists at {USER_CONFIG_PATH}")
+        logger.warning(f"Config file already exists: {USER_CONFIG_PATH}")
         return
 
     default_config = """# flashback-terminal configuration
+# Logging verbosity: 0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE
+logging:
+  verbosity: 2
+  log_to_file: false
+  log_file: null
+
 data_dir: "~/.local/share/flashback-terminal"
 
 server:
@@ -59,6 +125,32 @@ terminal:
   rows: 24
   cols: 80
   shell: null
+
+# Session manager configuration
+# mode: "local" | "screen" | "tmux"
+#   - local: Direct PTY fork (default, no dependencies)
+#   - screen: Use GNU Screen for session management
+#   - tmux: Use Tmux for session management
+session_manager:
+  mode: local
+  local:
+    use_pty: true
+  screen:
+    socket_dir: "~/.flashback-terminal/screen"
+    binary: "screen"
+  tmux:
+    socket_dir: "~/.flashback-terminal/tmux"
+    binary: "tmux"
+    config_file: null
+    nested_session_env:
+      TMUX: ""
+      TMUX_PANE: ""
+      TMUX_WINDOW: ""
+  capture:
+    enabled: true
+    interval_seconds: 10
+    max_captures_per_session: 1000
+    capture_full_scrollback: true
 
 modules:
   history_keeper:
@@ -83,6 +175,7 @@ search:
 """
     USER_CONFIG_PATH.write_text(default_config, encoding="utf-8")
     click.echo(f"Created config at {USER_CONFIG_PATH}")
+    logger.info(f"Created default config file: {USER_CONFIG_PATH}")
 
 
 @cli.command()
@@ -168,6 +261,32 @@ def check():
     """Check dependencies and configuration."""
     DependencyChecker.check_all()
     click.echo("All dependencies satisfied!")
+
+
+@cli.command("session-manager")
+@click.option("--info", is_flag=True, help="Show session manager configuration")
+@click.option("--validate", is_flag=True, help="Validate session manager dependencies")
+def session_manager_cmd(info, validate):
+    """Session manager utilities."""
+    from flashback_terminal.logger import logger
+
+    if info or (not info and not validate):
+        DependencyChecker.print_session_manager_info()
+        click.echo()
+
+    if validate or (not info and not validate):
+        cfg = get_config()
+        errors = DependencyChecker.check_session_manager_deps(cfg)
+        if errors:
+            for e in errors:
+                click.echo(f"✗ {e}", err=True)
+            sys.exit(1)
+        else:
+            mode = cfg.session_manager_mode
+            if mode == "local":
+                click.echo("✓ Local PTY mode (no external dependencies)")
+            else:
+                click.echo(f"✓ {mode} dependencies satisfied")
 
 
 def main():

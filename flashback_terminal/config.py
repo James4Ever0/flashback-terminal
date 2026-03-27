@@ -19,6 +19,11 @@ DATA_DIR = Path.home() / ".local" / "share" / "flashback-terminal"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "data_dir": str(DATA_DIR),
+    "logging": {
+        "verbosity": 2,  # 0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG, 4=TRACE
+        "log_to_file": False,
+        "log_file": None,  # None = auto-generate in data_dir
+    },
     "server": {
         "host": "127.0.0.1",
         "port": 9090,
@@ -31,6 +36,33 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "shell": None,
         "env": {},
         "login_shell": True,
+    },
+    "session_manager": {
+        "mode": "local",  # "local", "screen", "tmux"
+        "local": {
+            "use_pty": True,
+        },
+        "screen": {
+            "socket_dir": "~/.flashback-terminal/screen",
+            "binary": "screen",
+        },
+        "tmux": {
+            "socket_dir": "~/.flashback-terminal/tmux",
+            "binary": "tmux",
+            "config_file": None,  # Path to custom tmux config
+            "nested_session_env": {
+                "TMUX": "",
+                "TMUX_PANE": "",
+                "TMUX_WINDOW": "",
+                "TMUX_SESSION": "",
+            },
+        },
+        "capture": {
+            "enabled": True,
+            "interval_seconds": 10,
+            "max_captures_per_session": 1000,
+            "capture_full_scrollback": True,
+        },
     },
     "workers": {
         "embedding": {
@@ -203,12 +235,36 @@ class Config:
         return self.get("server.host", "127.0.0.1")
 
     @property
+    def data_dir(self) -> str:
+        return self.get("data_dir")
+
+    @property
     def server_port(self) -> int:
         return self.get("server.port", 8080)
 
     @property
     def retention_days(self) -> int:
         return self.get("workers.retention.history_days", 10)
+
+    @property
+    def verbosity(self) -> int:
+        return self.get("logging.verbosity", 2)
+
+    @property
+    def session_manager_mode(self) -> str:
+        return self.get("session_manager.mode", "local")
+
+    def get_session_manager_config(self) -> Dict[str, Any]:
+        mode = self.session_manager_mode
+        base_config = self.get("session_manager", {})
+        mode_config = self.get(f"session_manager.{mode}", {})
+        capture_config = self.get("session_manager.capture", {})
+        return {
+            "mode": mode,
+            "mode_config": mode_config,
+            "capture": capture_config,
+            **base_config,
+        }
 
 
 _config_instance: Optional[Config] = None
