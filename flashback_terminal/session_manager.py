@@ -183,7 +183,7 @@ class TmuxSession(BaseSession):
         self._config_file: Optional[str] = None
         self._running = False
         self._pty_fd: Optional[int] = None
-        self.pid = None
+        self.pid: Optional[int] = None
 
     def _get_env(self) -> Dict[str, str]:
         """Get environment for tmux commands (unsets TMUX for nested sessions)."""
@@ -207,8 +207,10 @@ class TmuxSession(BaseSession):
             if self.pid == 0:
                 # self._running = False
                 # self._pty_fd = None
-                os.execvpe("tmux", ["tmux"] + args)
+                # ATTENTION: must pass os.environ. is there anything special about the environ?
+                os.execvpe(shutil.which("tmux"), [shutil.which("tmux")] + args, os.environ)
             else:
+                logger.debug(f"[TmuxSession] Attached to tmux session at {self._socket_path}")
                 self._running = True
                 return True
         except Exception as e:
