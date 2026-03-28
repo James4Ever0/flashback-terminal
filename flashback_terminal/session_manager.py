@@ -207,8 +207,9 @@ class TmuxSession(BaseSession):
             if self.pid == 0:
                 # self._running = False
                 # self._pty_fd = None
-                # ATTENTION: must pass os.environ. is there anything special about the environ?
-                os.execvpe(shutil.which("tmux"), [shutil.which("tmux")] + args, os.environ)
+                # ATTENTION: must pass os.environ. is there anything special about the environ? can we pass empty dict to it?
+                # cannot pass empty dict, otherwise we will fail to obtain output or spawn process
+                os.execvpe(shutil.which("tmux"), [shutil.which("tmux")] + args, dict(SHELL='/bin/bash', TERM='xterm-256color', LANG='en_US.UTF-8'))
             else:
                 logger.debug(f"[TmuxSession] Attached to tmux session at {self._socket_path}")
                 self._running = True
