@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from flashback_terminal.logger import logger
+import asyncio
+
 
 try:
     import jieba
@@ -27,7 +29,7 @@ class BM25Search:
         self.config = get_config()
         self.k1 = self.config.get("search.bm25.k1", 1.5)
         self.b = self.config.get("search.bm25.b", 0.75)
-        self._build_index()
+        # self._build_index()
 
     def _tokenize(self, text: str) -> List[str]:
         if JIEBA_AVAILABLE:
@@ -196,7 +198,7 @@ class SearchEngine:
             except Exception as e:
                 print(f"[SearchEngine] Embedding search not available: {e}")
 
-    def search(
+    async def search(
         self,
         query: str,
         mode: str = "text",
@@ -210,7 +212,8 @@ class SearchEngine:
         if mode == "text":
             if not self.bm25:
                 return []
-            self.bm25._build_index()
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.bm25._build_index)
             results = self.bm25.search(query, session_ids, limit)
 
         elif mode == "semantic":
@@ -223,7 +226,8 @@ class SearchEngine:
             embedding_results = []
 
             if self.bm25:
-                self.bm25._build_index()
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self.bm25._build_index)
                 bm25_results = self.bm25.search(query, session_ids, limit * 2)
             if self.embedding:
                 embedding_results = self.embedding.search(query, session_ids, limit * 2)

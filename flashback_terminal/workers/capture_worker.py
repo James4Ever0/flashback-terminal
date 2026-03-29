@@ -72,14 +72,14 @@ class CaptureWorker:
         self._running = False
         logger.info("[CaptureWorker] Capture worker stopped")
 
-    def capture_all_sessions(self) -> List[Dict[str, Any]]:
+    async def capture_all_sessions(self) -> List[Dict[str, Any]]:
         """Capture all active sessions."""
         if not self._running:
             logger.info("[CaptureWorker] Capture worker not running")
             return []
 
         results = []
-        sessions = self.session_manager.list_sessions()
+        sessions = await self.session_manager.list_sessions()
         logger.debug(f"[CaptureWorker] Found {len(sessions)} sessions")
 
         for session_info in sessions:
@@ -97,7 +97,7 @@ class CaptureWorker:
                 logger.debug(f"[CaptureWorker] Skipping capture for {session_id} (too soon)")
                 continue
 
-            result = self.capture_session(session_id)
+            result = await self.capture_session(session_id)
             if not result:
                 logger.warning(f"[CaptureWorker] Failed to capture session {session_id}")
                 continue
@@ -108,11 +108,11 @@ class CaptureWorker:
         return results
 
     @log_function(Logger.DEBUG)
-    def capture_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def capture_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Capture a single session."""
         try:
             # Capture from session manager
-            capture = self.session_manager.capture_session(
+            capture = await self.session_manager.capture_session(
                 session_id, full_scrollback=self.capture_full_scrollback
             )
             session_terminal_size = self.session_manager.get_session(session_id)._terminal_size
@@ -219,9 +219,9 @@ class CaptureWorker:
             logger.error(f"[CaptureWorker] Failed to render screenshot: {e}")
             return None
 
-    def run_once(self) -> List[Dict[str, Any]]:
+    async def run_once(self) -> List[Dict[str, Any]]:
         """Run capture once (for manual triggering)."""
-        return self.capture_all_sessions()
+        return await self.capture_all_sessions()
 
 
 class CaptureWorkerScheduler:
@@ -246,9 +246,9 @@ class CaptureWorkerScheduler:
         self.worker.stop()
         logger.info("[CaptureWorkerScheduler] Capture scheduler stopped")
 
-    def run_captures(self) -> List[Dict[str, Any]]:
+    async def run_captures(self) -> List[Dict[str, Any]]:
         """Run captures for all sessions."""
         if not self._running:
             logger.info("[CaptureWorkerScheduler] Capture scheduler not running")
             return []
-        return self.worker.capture_all_sessions()
+        return await self.worker.capture_all_sessions()

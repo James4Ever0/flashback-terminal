@@ -73,14 +73,14 @@ class TerminalSession:
             self.on_output(content)
 
     @log_function(Logger.DEBUG)
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """Start the terminal session."""
         logger.info(f"Starting terminal session: uuid={self.uuid}, profile={self.profile.get('name', 'default')}")
 
         config = get_config()
         session_manager = get_session_manager()
 
-        self._session = session_manager.create_session(
+        self._session = await session_manager.create_session(
             session_id=self.uuid,
             name=f"Terminal-{self.session_id}",
             profile=self.profile,
@@ -97,28 +97,28 @@ class TerminalSession:
             logger.error(f"Failed to start terminal session: uuid={self.uuid}")
             return False
 
-    def resize(self, rows: int, cols: int) -> None:
+    async def resize(self, rows: int, cols: int) -> None:
         """Resize the terminal."""
         logger.debug(f"[TerminalSession] Resize request: rows={rows}, cols={cols}")
         if self._session:
             logger.debug(f"[TerminalSession] Forwarding resize to session {self._session.__class__.__name__}")
-            self._session.resize(rows, cols)
+            await self._session.resize(rows, cols)
             self._terminal_size = dict(rows=rows,cols=cols)
         else:
             logger.warning(f"[TerminalSession] Cannot resize - no active session")
 
-    def write(self, data: str) -> None:
+    async def write(self, data: str) -> None:
         """Write data to the terminal."""
         if self._session and self._running:
-            self._session.write(data)
+            await self._session.write(data)
 
-    def read(self, timeout: float = 0.1) -> Optional[str]:
+    async def read(self, timeout: float = 0.1) -> Optional[str]:
         """Read data from the terminal."""
         if self._session is None or not self._running:
             return None
 
-        data = self._session.read(timeout)
-        if data is None and not self._session.is_running():
+        data = await self._session.read(timeout)
+        if data is None and not await self._session.is_running():
             self._running = False
         return data
 
@@ -135,23 +135,23 @@ class TerminalSession:
             return self._session.get_cwd()
         return self._cwd
 
-    def is_running(self) -> bool:
+    async def is_running(self) -> bool:
         """Check if the session is still running."""
         if self._session and self._running:
-            return self._session.is_running()
+            return await self._session.is_running()
         return False
 
-    def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
+    async def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
         """Capture session content (for backend screenshots)."""
         if self._session:
-            return self._session.capture(full_scrollback)
+            return await self._session.capture(full_scrollback)
         return None
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the terminal session."""
         self._running = False
         if self._session:
-            self._session.stop()
+            await self._session.stop()
 
 
 class TerminalManager:
@@ -165,7 +165,7 @@ class TerminalManager:
         logger.debug("TerminalManager initialized")
     
     @log_function(Logger.DEBUG)
-    def restore_session(self, session_uuid: str) -> Optional[TerminalSession]:
+    async def restore_session(self, session_uuid: str) -> Optional[TerminalSession]:
         """Restore a terminal session by checking socket existence first."""
         logger.info(f"Attempting to restore session: {session_uuid}")
         
@@ -197,7 +197,7 @@ class TerminalManager:
                     )
                 
                 # Check if the tmux session is actually running and socket exists
-                if temp_session and temp_session.is_running():
+                if temp_session and await temp_session.is_running():
                     logger.info(f"[TerminalManager] Tmux session {session_uuid} is running and accessible")
                     
                     # Create proper TerminalSession wrapper
@@ -240,7 +240,7 @@ class TerminalManager:
                     )
                 
                 # Check if the screen session is actually running and socket exists
-                if temp_session and temp_session.is_running():
+                if temp_session and await temp_session.is_running():
                     logger.info(f"[TerminalManager] Screen session {session_uuid} is running and accessible")
                     
                     # Create proper TerminalSession wrapper
@@ -281,7 +281,7 @@ class TerminalManager:
             return None
 
     @log_function(Logger.DEBUG)
-    def create_session(
+    async def create_session(
         self, profile_name: str = "default", name: Optional[str] = None
     ) -> Optional[TerminalSession]:
         """Create a new terminal session."""
@@ -305,7 +305,7 @@ class TerminalManager:
             profile=profile,
         )
 
-        if session.start():
+        if await session.start():
             self.sessions[uuid_str] = session
             return session
         else:
@@ -316,11 +316,11 @@ class TerminalManager:
         """Get a session by UUID."""
         return self.sessions.get(uuid)
 
-    def close_session(self, uuid: str) -> None:
+    async def close_session(self, uuid: str) -> None:
         """Close a session."""
         if uuid in self.sessions:
             session = self.sessions[uuid]
-            session.stop()
+            await session.stop()
             self.db.update_session(
                 session.session_id,
                 status="inactive",
@@ -328,7 +328,7 @@ class TerminalManager:
             )
             del self.sessions[uuid]
 
-    def capture_session(
+    async def capture_session(
         self,
         uuid: str,
         full_scrollback: bool = False,
@@ -336,5 +336,5 @@ class TerminalManager:
         """Capture a session's content."""
         session = self.sessions.get(uuid)
         if session:
-            return session.capture(full_scrollback)
+            return await session.capture(full_scrollback)
         return None

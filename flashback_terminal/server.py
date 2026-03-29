@@ -125,7 +125,7 @@ async def capture_scheduler_thread():
         await asyncio.sleep(interval)
         logger.debug(f"[capture_scheduler_thread] Waking up")
         try:
-            results = capture_scheduler.run_captures()
+            results = await capture_scheduler.run_captures()
             if results:
                 logger.debug(f"[capture_scheduler_thread] Captured {len(results)} sessions")
             else:
@@ -195,10 +195,16 @@ async def index(request: Request):
     return "<h1>flashback-terminal</h1><p>Static files not found</p>"
 
 
+# TODO: Speed this websocket terminal handler up!
 @app.websocket("/ws/terminal/{session_uuid}")
 async def terminal_websocket(websocket: WebSocket, session_uuid: str):
     """WebSocket endpoint for terminal sessions."""
     if ws_handler:
+        # execute this corotine in separate thread
+        # def handle_websocket_threaded():
+        #     loop = asyncio.new_event_loop()
+        #     loop.run_until_complete(ws_handler.handle(websocket, session_uuid))
+        # threading.Thread(target=handle_websocket_threaded, daemon=True).start()
         await ws_handler.handle(websocket, session_uuid)
 
 
@@ -244,7 +250,7 @@ async def attach_to_session(session_uuid: str):
         session_manager = terminal_manager.session_manager
         existing_session = session_manager.get_session(session_uuid)
         
-        if existing_session and existing_session.is_running():
+        if existing_session and await existing_session.is_running():
             # Create a new terminal session that wraps the existing backend session
             terminal_session._session = existing_session
             terminal_session._running = True
@@ -309,7 +315,7 @@ async def create_session(profile: str = "default", name: Optional[str] = None):
     """Create a new terminal session."""
     logger.info(f"Creating new session: profile={profile}, name={name}")
 
-    session = terminal_manager.create_session(profile_name=profile, name=name)
+    session = await terminal_manager.create_session(profile_name=profile, name=name)
     if not session:
         logger.error(f"Failed to create session: profile={profile}, name={name}")
         raise HTTPException(status_code=500, detail="Failed to create session")
@@ -359,7 +365,7 @@ async def delete_session(session_uuid: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    terminal_manager.close_session(session_uuid)
+    await terminal_manager.close_session(session_uuid)
     db.delete_session(session.id)
     return {"success": True}
 
@@ -398,7 +404,7 @@ async def search(request: SearchRequest):
         logger.debug(f"Search limited to session_ids: {target_session_ids}")
 
     logger.debug("Executing search...")
-    results = search_engine.search(
+    results = await search_engine.search(
         query=request.query,
         mode=request.mode,
         scope=request.scope,

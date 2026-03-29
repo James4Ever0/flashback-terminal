@@ -6,6 +6,8 @@ Local PTY mode has been removed in favor of multiplexers for:
 - Better session persistence
 - Server-side terminal content extraction
 """
+import asyncio
+import aiofiles
 import pty
 import fcntl
 import os
@@ -128,33 +130,32 @@ class BaseSession(ABC):
         self._is_running_last_cache: Optional[dict] = None
 
     @abstractmethod
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """Start the session."""
         pass
 
     @abstractmethod
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the session."""
         pass
 
     @abstractmethod
-    def write(self, data: str) -> None:
+    async def write(self, data: str) -> None:
         """Write data to the session."""
         pass
 
     @abstractmethod
-    def read(self, timeout: float = 0.1) -> Optional[str]:
+    async def read(self, timeout: float = 0.1) -> Optional[str]:
         """Read data from the session."""
         pass
 
     @abstractmethod
-    def resize(self, rows: int, cols: int) -> None:
+    async def resize(self, rows: int, cols: int) -> None:
         """Resize the terminal."""
         pass
 
-
     @abstractmethod
-    def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
+    async def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
         """Capture session content (for backend screenshots)."""
         pass
 
@@ -167,7 +168,7 @@ class BaseSession(ABC):
         return self._cwd
 
     @abstractmethod
-    def _is_running(self) -> bool:
+    async def _is_running(self) -> bool:
         ...
 
     # def is_running(self) -> bool:
@@ -183,7 +184,7 @@ class BaseSession(ABC):
     #     breakpoint()
     #     return ret
 
-    def is_running(self) -> bool:
+    async def is_running(self) -> bool:
         # logger.debug("[BaseSession] Calling is_running at time: %s", time.time())
         ret = False
         cached=False
@@ -198,12 +199,11 @@ class BaseSession(ABC):
                 cache_reset=True
                 self._is_running_last_cache = None
         if not self._is_running_last_cache:
-            is_running = self._is_running()
+            is_running = await self._is_running()
             ret = is_running
             if is_running:
                 self._is_running_last_cache = dict(timestamp = time.time(), is_running = is_running)
         logger.trace('[BaseSession] is_running cache_used=%s, cache_found=%s, called_time=%s, result=%s, cache_reset=%s' % (cached,cache_found, time.time(), ret, cache_reset))
-        # breakpoint()
         return ret
 
     def _log_output(self, content: str) -> None:
@@ -285,22 +285,22 @@ set -g default-terminal "screen-256color"
             logger.debug(f"[TmuxSession] Failed to attach: {e}")
             return False
 
-    def _get_pane_tty(self) -> Optional[str]:
+    async def _get_pane_tty(self) -> Optional[str]:
         """Get the pty device path for the tmux pane."""
         try:
-            result = self._run_tmux([
+            result = await self._run_tmux([
                 "display-message",
                 "-p",
                 "-t", self._target,
                 "#{pane_tty}",
-            ], check=False)
+            ], check=False, get_output=True)
             if result.returncode == 0 and result.stdout:
                 return result.stdout.strip()
         except Exception as e:
             logger.debug(f"Failed to get pane tty: {e}")
         return None
 
-    def _run_tmux(self, args: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    async def _run_tmux(self, args: List[str], check: bool = True, get_output:bool=False, input=None) -> subprocess.CompletedProcess:
         """Run tmux command with custom socket."""
         cmd = [
             self._tmux_binary,
@@ -317,12 +317,34 @@ set -g default-terminal "screen-256color"
         cmd.extend(args)
 
         env = self._get_env()
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
+        
+        logger.trace("[TmuxSession] Tmux execution cmd: {}".format(" ".join([str(it) for it in cmd])))
+        # Use asyncio subprocess for async execution
+        # it must stucked at here?
+        if get_output:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await process.communicate(input)
+            logger.debug("[TmuxSession] Process stdout:\n%s"%stdout)
+            logger.debug("[TmuxSession] Process stderr:\n%s"%stderr)
+        else:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                env=env,
+            )
+            await process.wait()
+            stdout, stderr = b"", b""
+        logger.debug("Process return code: %s" % process.returncode)
+        
+        result = subprocess.CompletedProcess(
+            args=cmd,
+            returncode=process.returncode,
+            stdout=stdout.decode('utf-8', errors='replace'),
+            stderr=stderr.decode('utf-8', errors='replace')
         )
 
         if check and result.returncode != 0:
@@ -332,7 +354,7 @@ set -g default-terminal "screen-256color"
         return result
 
     @log_function(Logger.DEBUG)
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """Start tmux session."""
         logger.info(f"Starting tmux session: {self.session_id}")
 
@@ -352,11 +374,11 @@ set -g default-terminal "screen-256color"
 
         try:
             # Check if we are "attaching" to an existing session
-            if self.is_running():
+            if await self.is_running():
                 logger.debug("[TmuxSession] Attaching to existing session")
             else:
                 # Create new session detached
-                self._run_tmux([
+                await self._run_tmux([
                     "new-session",
                     "-d",
                     "-s", self._socket_name,
@@ -365,25 +387,25 @@ set -g default-terminal "screen-256color"
                     start_command,
                 ])
 
-                self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"])
+                await self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"])
 
                 # set -g status off
                 # set -g mouse off
-                self._run_tmux(["set-option", "-g", "status", "off"])
-                self._run_tmux(["set-option", "-g", "mouse", "off"])
+                await self._run_tmux(["set-option", "-g", "status", "off"])
+                await self._run_tmux(["set-option", "-g", "mouse", "off"])
 
                 # set-environment -r TMUX
-                self._run_tmux(["set-environment", "-r", "TMUX"])
+                await self._run_tmux(["set-environment", "-r", "TMUX"])
 
                 # unbind "Ctrl b" normal
-                self._run_tmux(["unbind-key", "C-b"])
+                await self._run_tmux(["unbind-key", "C-b"])
 
                 # unbind-key -a
-                self._run_tmux(["unbind-key", "-a"])
+                await self._run_tmux(["unbind-key", "-a"])
 
                 # Set environment variables
                 for key, value in profile_env.items():
-                    self._run_tmux([
+                    await self._run_tmux([
                         "set-environment",
                         "-t", self._socket_name,
                         key, value,
@@ -393,17 +415,18 @@ set -g default-terminal "screen-256color"
 
             # Attach to tmux session using a pty for direct I/O
             # Wait for pane to be ready before attaching
-            pane_tty_path = None
+            has_pane_tty_path = False
             for _ in range(5):
-                pane_tty_path = self._get_pane_tty()
+                pane_tty_path = await self._get_pane_tty()
                 if pane_tty_path and os.path.exists(pane_tty_path):
+                    has_pane_tty_path = True
                     break
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
 
-            if pane_tty_path and os.path.exists(pane_tty_path):
+            if has_pane_tty_path:
                 # Fork a pty and run tmux attach to connect to the session
                 if self._get_attach_tty():
-                    logger.debug(f"Attached to tmux session {self._socket_name} via pty (pane tty: {pane_tty_path})")
+                    logger.debug(f"Attached to tmux session {self._socket_name} via pty")
                 else:
                     logger.warning(f"Failed to attach to tmux session {self._socket_name}, using capture-pane fallback")
                     self._pty_fd = None
@@ -415,12 +438,12 @@ set -g default-terminal "screen-256color"
             logger.info(f"[TmuxSession] Executing init commands: {self.init_commands}")
             for cmd in self.init_commands:
                 escaped = cmd.replace('"', '\\"')
-                self._run_tmux([
+                await self._run_tmux([
                     "send-keys",
                     "-t", self._target,
                     escaped,
                 ], check=False)
-                self._run_tmux([
+                await self._run_tmux([
                     "send-keys",
                     "-t", self._target,
                     "Enter",
@@ -428,10 +451,12 @@ set -g default-terminal "screen-256color"
             return True
 
         except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
             logger.error(f"[TmuxSession] Failed to start tmux session: {e}")
             return False
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop tmux session."""
         # Close pty if open
         if self._pty_fd is not None:
@@ -442,7 +467,7 @@ set -g default-terminal "screen-256color"
             self._pty_fd = None
 
         try:
-            self._run_tmux([
+            await self._run_tmux([
                 "kill-session",
                 "-t", self._socket_name,
             ], check=False)
@@ -450,7 +475,7 @@ set -g default-terminal "screen-256color"
             logger.debug(f"[TmuxSession] Error stopping tmux session: {e}")
         self._running = False
 
-    def write(self, data: str) -> None:
+    async def write(self, data: str) -> None:
         """Send keys to tmux session."""
         if not self._running:
             logger.debug(f"[TmuxSession] Session not running, cannot write")
@@ -460,19 +485,20 @@ set -g default-terminal "screen-256color"
         if self._pty_fd is not None:
             logger.debug(f"[TmuxSession] Writing to pty for session {self._socket_name}")
             try:
-                # Write to pty device
-                os.write(self._pty_fd, data.encode())
+                # Write to pty device asynchronously
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, os.write, self._pty_fd, data.encode())
                 return
             except (OSError, BlockingIOError) as e:
                 logger.debug(f"[TmuxSession] Pty write failed, falling back to send-keys: {e}")
                 # Fall back to send-keys
         else:
-            logger.debug(f"[TmuxSession] No pty available for tmux session {self._socket_name}")
+            logger.debug(f"[TmuxSession] No pty available for tmux session {self._socket_name}, cannot use pty write.")
 
         try:
             # Escape special characters for tmux send-keys
             escaped = data.replace("'", "'\"'\"'")
-            self._run_tmux([
+            await self._run_tmux([
                 "send-keys",
                 "-t", self._target,
                 escaped,
@@ -480,7 +506,7 @@ set -g default-terminal "screen-256color"
         except Exception as e:
             logger.debug(f"[TmuxSession] Write error: {e}")
 
-    def read(self, timeout: float = 0.1) -> Optional[str]:
+    async def read(self, timeout: float = 0.1) -> Optional[str]:
         """Read from tmux session (via pty or capture-pane)."""
         if not self._running:
             logger.debug(f"[TmuxSession] Session not running, cannot read")
@@ -488,14 +514,16 @@ set -g default-terminal "screen-256color"
 
         # # Try pty first if available
         if self._pty_fd is None:
-            logger.debug(f"[TmuxSession] No pty available for tmux session {self._socket_name}, cannot read.")
+            logger.debug(f"[TmuxSession] No pty available for tmux session {self._socket_name}, cannot use pty read.")
         else:
             try:
-                ready, _, _ = select.select([self._pty_fd], [], [], timeout)
-                if not ready:
+                # Use asyncio to wait for data to be available
+                loop = asyncio.get_event_loop()
+                ready = await loop.run_in_executor(None, select.select, [self._pty_fd], [], [], timeout)
+                if not ready[0]:
                     # No data available
                     return None
-                data = os.read(self._pty_fd, 4096)
+                data = await loop.run_in_executor(None, os.read, self._pty_fd, 4096)
                 if data:
                     logger.debug(f"[TmuxSession] Read {len(data)} bytes from pty")
                     text = data.decode("utf-8", errors="replace")
@@ -514,12 +542,12 @@ set -g default-terminal "screen-256color"
         try:
             # Use capture-pane with -S - to get only the bottom line (newest content)
             # This avoids capturing the entire screen content every time
-            result = self._run_tmux([
+            result = await self._run_tmux([
                 "capture-pane",
                 "-p",  # Print to stdout
                 "-J",  # Join wrapped lines
                 "-t", self._target,
-            ], check=False)
+            ], check=False, get_output=True)
 
             if result.returncode == 0 and result.stdout:
                 text = result.stdout
@@ -608,20 +636,21 @@ set -g default-terminal "screen-256color"
             has_cursor = True
         return has_cursor, coordinates
 
-    def resize(self, rows: int, cols: int) -> None:
+    async def resize(self, rows: int, cols: int) -> None:
         """Resize tmux window."""
         self._terminal_size = dict(rows=rows, cols=cols)
         # Try to resize pty directly
         if self._pty_fd is not None:
             try:
                 size = struct.pack("HHHH", rows, cols, 0, 0)
-                fcntl.ioctl(self._pty_fd, termios.TIOCSWINSZ, size)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, fcntl.ioctl, self._pty_fd, termios.TIOCSWINSZ, size)
                 return
             except Exception as e:
                 logger.debug(f"Pty resize failed, falling back to tmux: {e}")
 
         try:
-            self._run_tmux([
+            await self._run_tmux([
                 "resize-window",
                 "-t", self._target,
                 "-x", str(cols),
@@ -631,11 +660,11 @@ set -g default-terminal "screen-256color"
             logger.debug(f"Resize error: {e}")
 
 
-    def _is_running(self) -> bool:
+    async def _is_running(self) -> bool:
         """Check if tmux session is running and socket exists."""
         try:
             # First check if tmux reports the session as running
-            result = self._run_tmux([
+            result = await self._run_tmux([
                 "has-session",
                 "-t", self._socket_name,
             ], check=False)
@@ -652,7 +681,7 @@ set -g default-terminal "screen-256color"
             # Additional check: verify we can get basic session info
             # This ensures the socket is actually functional
             try:
-                info_result = self._run_tmux([
+                info_result = await self._run_tmux([
                     "display-message",
                     "-p", 
                     "-t", self._target,
@@ -672,20 +701,25 @@ set -g default-terminal "screen-256color"
             logger.debug(f"[TmuxSession] Error checking session status: {e}")
             return False
 
-    def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
+    async def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
         """Capture tmux pane content."""
         try:
             # Capture with escape sequences (ANSI)
             ansi_args = ["capture-pane", "-p", "-e", "-t", self._target]
             if full_scrollback:
                 ansi_args.extend(["-S", "-", "-E", "-"])
-            ansi_result = self._run_tmux(ansi_args, check=False)
+            ansi_result = await self._run_tmux(ansi_args, check=False, get_output=True)
 
             # Capture plain text
             text_args = ["capture-pane", "-p", "-t", self._target]
             if full_scrollback:
                 text_args.extend(["-S", "-", "-E", "-"])
-            text_result = self._run_tmux(text_args, check=False)
+            text_result = await self._run_tmux(text_args, check=False, get_output=True)
+
+            if not text_result.stdout:
+                logger.warning("[TmuxSession] No text result in capture for session: %s" % self._socket_path)
+            if not ansi_result.stdout:
+                logger.warning("[TmuxSession] No ansi result in capture for session: %s" % self._socket_path)
 
             return SessionCapture(
                 text=text_result.stdout if text_result.returncode == 0 else None,
@@ -693,7 +727,7 @@ set -g default-terminal "screen-256color"
                 session_name=self._socket_name,
             )
         except Exception as e:
-            logger.error(f"Capture error: {e}")
+            logger.error(f"[TmuxSession] Capture error: {e}")
             return None
 
 
@@ -736,7 +770,7 @@ unsetenv STY
         self._read_mode: Optional[str] = None
         self.pid: Optional[int] = None
 
-    def _run_screen(self, args: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    async def _run_screen(self, args: List[str], check: bool = True, get_output:bool=False, input=None) -> subprocess.CompletedProcess:
         """Run screen command with custom socket."""
         cmd = [
             self._screen_binary,
@@ -756,12 +790,32 @@ unsetenv STY
 
         logger.trace("[ScreenSession] Running screen command with SCREENDIR=%s: %s" % (self._socket_dir, " ".join(cmd)))
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
+        # Use asyncio subprocess for async execution
+
+        if get_output:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await process.communicate(input)
+            logger.debug("[ScreenSession] Process stdout:\n%s"%stdout)
+            logger.debug("[ScreenSession] Process stderr:\n%s"%stderr)
+        else:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                env=env,
+            )
+            await process.wait()
+            stdout, stderr = b"", b""
+        logger.debug("[ScreenSession] Process return code: %s" % process.returncode)
+        
+        result = subprocess.CompletedProcess(
+            args=cmd,
+            returncode=process.returncode,
+            stdout=stdout.decode('utf-8', errors='replace'),
+            stderr=stderr.decode('utf-8', errors='replace')
         )
 
         if check and result.returncode != 0:
@@ -788,14 +842,14 @@ unsetenv STY
                 self._running = True
                 return True
         except Exception as e:
-            logger.debug(f"[TmuxSession] Failed to attach: {e}")
+            logger.debug(f"[ScreenSession] Failed to attach: {e}")
             return False
 
-    def _get_screen_pty(self) -> Optional[str]:
+    async def _get_screen_pty(self) -> Optional[str]:
         """Get the pty device path for the screen session."""
         try:
             # Get screen session info
-            result = self._run_screen(["-list"], check=False)
+            result = await self._run_screen(["-list"], check=False, get_output=True)
             if result.returncode != 0:
                 return None
             # Parse output to find our session
@@ -822,11 +876,11 @@ unsetenv STY
                             else:
                                 logger.debug("[ScreenSession] PID %s not running for socket %s" % (pid, socket_path))
         except Exception as e:
-            logger.debug(f"Failed to get screen pty: {e}")
+            logger.debug(f"[ScreenSession] Failed to get screen pty: {e}")
         return None
 
     @log_function(Logger.DEBUG)
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """Start screen session."""
         logger.info(f"Starting screen session: {self.session_id}")
 
@@ -872,8 +926,8 @@ unsetenv STY
 
             screen_cmd.extend(["bash", "-c", start_command])
 
-            if not self.is_running():
-                self._run_screen(screen_cmd)
+            if not await self.is_running():
+                await self._run_screen(screen_cmd)
             else:
                 logger.debug("[ScreenSession] Attaching to existing session")
 
@@ -882,10 +936,10 @@ unsetenv STY
             # Try to open the session's pty device for direct I/O
             raw_pty_path = None
             for _ in range(5):
-                raw_pty_path = self._get_screen_pty()
+                raw_pty_path = await self._get_screen_pty()
                 if raw_pty_path and os.path.exists(raw_pty_path):
                     break
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
             logger.debug("[ScreenSession] Session Path: %s | Raw PTY path: %s" % (self._session_name, raw_pty_path))
 
 
@@ -904,10 +958,10 @@ unsetenv STY
             logger.info(f"[ScreenSession] Executing init commands: {self.init_commands}")
             for cmd in self.init_commands:
                 escaped = cmd.replace("'", "'\"'\"'")
-                self._run_screen([
+                await self._run_screen([
                     "-X", "stuff", escaped,
                 ], check=False)
-                self._run_screen([
+                await self._run_screen([
                     "-X", "stuff", "\n",
                 ], check=False)
             return True
@@ -916,7 +970,7 @@ unsetenv STY
             logger.error(f"[ScreenSession] Failed to start screen session: {e}")
             return False
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop screen session."""
         # Close pty if open
         if self._pty_fd is not None:
@@ -927,14 +981,14 @@ unsetenv STY
             self._pty_fd = None
 
         try:
-            self._run_screen([
+            await self._run_screen([
                 "-X", "quit",
             ], check=False)
         except Exception as e:
             logger.debug(f"[ScreenSession] Error stopping screen session: {e}")
         self._running = False
 
-    def write(self, data: str) -> None:
+    async def write(self, data: str) -> None:
         """Send input to screen session."""
         if not self._running:
             return
@@ -942,8 +996,9 @@ unsetenv STY
         # Try pty first if available
         if self._pty_fd is not None:
             try:
-                # Write to pty device
-                os.write(self._pty_fd, data.encode())
+                # Write to pty device asynchronously
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, os.write, self._pty_fd, data.encode())
                 return
             except (OSError, BlockingIOError) as e:
                 logger.debug(f"[ScreenSession] Pty write failed, falling back to stuff: {e}")
@@ -952,13 +1007,13 @@ unsetenv STY
         try:
             # Use screen's stuff command to send input
             escaped = data.replace("'", "'\"'\"'")
-            self._run_screen([
+            await self._run_screen([
                 "-X", "stuff", escaped,
             ], check=False)
         except Exception as e:
             logger.debug(f"[ScreenSession] Write error: {e}")
 
-    def read(self, timeout: float = 0.1) -> Optional[str]:
+    async def read(self, timeout: float = 0.1) -> Optional[str]:
         """Read from screen session (via pty or not supported)."""
         if not self._running:
             return None
@@ -966,9 +1021,11 @@ unsetenv STY
         # Try pty first if available
         if self._pty_fd is not None:
             try:
-                ready, _, _ = select.select([self._pty_fd], [], [], timeout)
-                if ready:
-                    data = os.read(self._pty_fd, 4096)
+                # Use asyncio to wait for data to be available
+                loop = asyncio.get_event_loop()
+                ready = await loop.run_in_executor(None, select.select, [self._pty_fd], [], [], timeout)
+                if ready[0]:
+                    data = await loop.run_in_executor(None, os.read, self._pty_fd, 4096)
                     if data:
                         text = data.decode("utf-8", errors="replace")
                         self._log_output(text)
@@ -982,7 +1039,7 @@ unsetenv STY
         # We use hardcopy for capture instead
         return None
 
-    def resize(self, rows: int, cols: int) -> None:
+    async def resize(self, rows: int, cols: int) -> None:
         """Resize screen window."""
         self._terminal_size = dict(rows=rows, cols=cols)
 
@@ -992,9 +1049,10 @@ unsetenv STY
         if self._pty_fd is not None:
             try:
                 size = struct.pack("HHHH", rows, cols, 0, 0)
-                fcntl.ioctl(self._pty_fd, termios.TIOCSWINSZ, size)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, fcntl.ioctl, self._pty_fd, termios.TIOCSWINSZ, size)
 
-                self._run_screen([
+                await self._run_screen([
                     "-X", "fit"
                 ], check=False)
                 return
@@ -1003,7 +1061,7 @@ unsetenv STY
 
         # Fallback to screen resize commands
         try:
-            self._run_screen([
+            await self._run_screen([
                 "-X", "fit"
             ], check=False)
             
@@ -1012,11 +1070,11 @@ unsetenv STY
             logger.debug(f"[ScreenSession] Screen resize error: {e}")
 
 
-    def _is_running(self) -> bool:
+    async def _is_running(self) -> bool:
         """Check if screen session is running and socket exists."""
         try:
             # First check if screen reports the session as running
-            result = self._run_screen([
+            result = await self._run_screen([
                 "-ls",
             ], check=False)
             # Check if our session name appears in the output
@@ -1068,35 +1126,35 @@ unsetenv STY
             logger.debug(f"[ScreenSession] Error checking session status: {e}")
             return False
 
-    def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
+    async def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
         """Capture screen session content using hardcopy."""
         try:
             # Create temp file for hardcopy
-            with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=True) as f:
                 temp_path = f.name
 
-            # Use hardcopy to dump screen content
-            # -h flag for hardcopy (dump scrollback buffer)
-            hardcopy_args = ["-X", "hardcopy"]
-            if full_scrollback:
-                hardcopy_args.append("-h")
-            hardcopy_args.append(temp_path)
+                # Use hardcopy to dump screen content
+                # -h flag for hardcopy (dump scrollback buffer)
+                hardcopy_args = ["-X", "hardcopy"]
+                if full_scrollback:
+                    hardcopy_args.append("-h")
+                hardcopy_args.append(temp_path)
 
-            self._run_screen(hardcopy_args, check=False)
+                await self._run_screen(hardcopy_args, check=False, get_output=True)
 
-            # Read the captured content
-            time.sleep(0.1)  # Give screen time to write
-            with open(temp_path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
+                # Read the captured content asynchronously
+                await asyncio.sleep(0.1)  # Give screen time to write
+                async with aiofiles.open(temp_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = await f.read()
+                
+                if not content:
+                    logger.warning("[ScreenSession] No ansi result in capture for session: %s" % self._socket_path)
 
-            # Clean up
-            os.unlink(temp_path)
-
-            return SessionCapture(
-                text=content,
-                ansi=None,  # Screen hardcopy doesn't preserve ANSI
-                session_name=self._session_name,
-            )
+                return SessionCapture(
+                    text=content,
+                    ansi=None,  # Screen hardcopy doesn't preserve ANSI
+                    session_name=self._session_name,
+                )
         except Exception as e:
             logger.error(f"[ScreenSession] Capture error: {e}")
             return None
@@ -1152,7 +1210,7 @@ class SessionManager:
         return self.config.get("session_manager.disable_client_capture", True)
 
     @log_function(Logger.DEBUG)
-    def create_session(
+    async def create_session(
         self,
         session_id: str,
         name: str,
@@ -1184,7 +1242,7 @@ class SessionManager:
             init_commands = self.config.get("session_manager.tmux.init_commands", [])
             session = TmuxSession(session_id=session_id, name=name, profile=profile, socket_dir=socket_dir, on_output=on_output, on_clear=on_clear, on_cursor=on_cursor, init_commands=init_commands)
 
-        if session.start():
+        if await session.start():
             self._sessions[session_id] = session
             return session
         return None
@@ -1193,14 +1251,14 @@ class SessionManager:
         """Get session by ID."""
         return self._sessions.get(session_id)
 
-    def close_session(self, session_id: str) -> None:
+    async def close_session(self, session_id: str) -> None:
         """Close a session."""
         if session_id in self._sessions:
             session = self._sessions[session_id]
-            session.stop()
+            await session.stop()
             del self._sessions[session_id]
 
-    def list_sessions(self) -> List[SessionInfo]:
+    async def list_sessions(self) -> List[SessionInfo]:
         """List all managed sessions."""
         sessions = []
         for session_id, session in self._sessions.items():
@@ -1208,11 +1266,11 @@ class SessionManager:
                 session_id=session_id,
                 name=session.name,
                 created_at=session._created_at,
-                is_running=session.is_running(),
+                is_running=await session.is_running(),
             ))
         return sessions
 
-    def capture_session(
+    async def capture_session(
         self,
         session_id: str,
         full_scrollback: bool = False,
@@ -1220,7 +1278,7 @@ class SessionManager:
         """Capture session content."""
         session = self._sessions.get(session_id)
         if session:
-            return session.capture(full_scrollback)
+            return await session.capture(full_scrollback)
         return None
 
 

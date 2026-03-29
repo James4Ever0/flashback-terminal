@@ -36,7 +36,7 @@ class TerminalWebSocketHandler:
             if db_session:
                 # Try to restore/reattach to the session
                 logger.info(f"[WebSocket] Attempting to restore session {session_uuid}")
-                session = self.terminal_manager.restore_session(session_uuid)
+                session = await self.terminal_manager.restore_session(session_uuid)
                 
                 if session:
                     was_restored = True
@@ -56,7 +56,7 @@ class TerminalWebSocketHandler:
                         "can_recreate": True
                     })
                     # Create a new session instead
-                    session = self.terminal_manager.create_session()
+                    session = await self.terminal_manager.create_session()
                     if session:
                         session_uuid = session.uuid
                         await websocket.send_json({
@@ -66,7 +66,7 @@ class TerminalWebSocketHandler:
                         })
             else:
                 # No existing session, create new one
-                session = self.terminal_manager.create_session()
+                session = await self.terminal_manager.create_session()
                 if session:
                     session_uuid = session.uuid
 
@@ -109,21 +109,22 @@ class TerminalWebSocketHandler:
 
             session_ready = False
             for _ in range(10):
-                session_ready = session._session._is_running()
+                session_ready = await session._session._is_running()
                 if session_ready: break
                 else:
                     await asyncio.sleep(0.1)
             if not session_ready:
                 logger.error("Session is not ready after 1 second. Disconnecting.")
             while session_ready:
-                session.read(timeout=0.05)
+                # TODO: create two asyncio tasks, wait till one of them completes, then terminate.
+                data = await session.read(timeout=0.05)
                 try:
                     message = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                     await self._handle_message(websocket, session, message)
                 except asyncio.TimeoutError:
                     pass
 
-                if not session.is_running():
+                if not await session.is_running():
                     break
 
         except WebSocketDisconnect:
@@ -161,12 +162,12 @@ class TerminalWebSocketHandler:
             msg_type = msg.get("type")
 
             if msg_type == "input":
-                session.write(msg.get("data", ""))
+                await session.write(msg.get("data", ""))
             elif msg_type == "resize":
                 rows = msg.get("rows", 24)
                 cols = msg.get("cols", 80)
                 logger.debug(f"[WebSocket] Resize request: rows={rows}, cols={cols}")
-                session.resize(rows, cols)
+                await session.resize(rows, cols)
             elif msg_type == "command":
                 cmd = msg.get("cmd")
                 if cmd == "rename":
@@ -183,7 +184,7 @@ class TerminalWebSocketHandler:
                 elif cmd == "screenshot_upload":
                     await self._handle_screenshot_upload(session, msg)
         except json.JSONDecodeError:
-            session.write(message)
+            await session.write(message)
 
     async def _handle_title_change(
         self, session: TerminalSession, title: str
@@ -304,7 +305,7 @@ class TerminalWebSocketHandler:
         import os
 
         if os.path.isdir(last_cwd):
-            session.write(f'cd "{last_cwd}"\n')
+            await session.write(f'cd "{last_cwd}"\n')
             await websocket.send_json(
                 {"type": "cwd_change", "path": last_cwd, "success": True}
             )

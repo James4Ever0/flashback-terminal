@@ -2,6 +2,10 @@
 # Python
 # =============================================================================
 # Byte-compiled / optimized / DLL files
+
+logs/*
+log.txt
+
 __pycache__/
 *.py[cod]
 *$py.class
