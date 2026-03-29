@@ -1099,10 +1099,13 @@ class SessionManager:
         return None
 
 
-def get_session_manager() -> SessionManager:
+def get_session_manager(*args, **kwargs) -> SessionManager:
     """Get or create the global session manager instance."""
     global _singleton_session_manager
     if not _singleton_session_manager:
-        _singleton_session_manager = SessionManager()
+        logger.info("Creating global session manager instance with params args=%s, kwargs=%s", args, kwargs)
+        _singleton_session_manager = SessionManager(*args, **kwargs)
+    else:
+        logger.info("Using existing global session manager instance")
 
     return _singleton_session_manager
