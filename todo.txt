@@ -19,3 +19,4 @@
 - [ ] make terminal workers threaded per backend attached tmux/screen process, and do not constantly poll them. instead, use event driven approach, like using tornado process protocol. make sure we will use no async await in code, including websocket. make sure each thread is separated.
 - [ ] separate terminal server and webui, first spin up server from cli to receive terminal creation, reconnect request, do periodic tasks and run workers, then webui just attach to the server designated socket and method, perform search etc.
 - [ ] search result is empty again. also try to refresh index in the background.
+- [ ] terminal screenshot not working properly. pending test.
