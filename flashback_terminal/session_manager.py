@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from flashback_terminal.config import get_config
+from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
 
 _singleton_session_manager = None
@@ -123,6 +124,8 @@ class BaseSession(ABC):
         self._cwd: Optional[str] = None
         self._created_at = time.time()
         self._terminal_size: Optional[dict[str, int]] = None
+        self._is_running_cache_ttl = 5
+        self._is_running_last_cache: Optional[dict] = None
 
     @abstractmethod
     def start(self) -> bool:
@@ -149,10 +152,6 @@ class BaseSession(ABC):
         """Resize the terminal."""
         pass
 
-    @abstractmethod
-    def is_running(self) -> bool:
-        """Check if session is running."""
-        pass
 
     @abstractmethod
     def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
@@ -166,6 +165,46 @@ class BaseSession(ABC):
     def get_cwd(self) -> Optional[str]:
         """Get current working directory."""
         return self._cwd
+
+    @abstractmethod
+    def _is_running(self) -> bool:
+        ...
+
+    # def is_running(self) -> bool:
+    #     return self._is_running()
+    #     pass
+    
+    # def is_running(self)-> bool:
+    # #     """Check if session is running."""
+    # #     for line in traceback.format_stack():
+    #         # print(line.strip())
+    #     ret= self._is_running()
+    #     logger.debug('[BaseSession] is_running called_time=%s, result=%s' % (time.time(), ret))
+    #     breakpoint()
+    #     return ret
+
+    def is_running(self) -> bool:
+        # logger.debug("[BaseSession] Calling is_running at time: %s", time.time())
+        ret = False
+        cached=False
+        cache_found=False
+        cache_reset=False
+        if self._is_running_last_cache:
+            cache_found=True
+            if time.time() - self._is_running_last_cache['timestamp'] < self._is_running_cache_ttl:
+                cached=True
+                ret = self._is_running_last_cache['is_running']
+            else:
+                cache_reset=True
+                self._is_running_last_cache = None
+        if not self._is_running_last_cache:
+            is_running = self._is_running()
+            ret = is_running
+            if is_running:
+                self._is_running_last_cache = dict(timestamp = time.time(), is_running = is_running)
+        logger.trace('[BaseSession] is_running cache_used=%s, cache_found=%s, called_time=%s, result=%s, cache_reset=%s' % (cached,cache_found, time.time(), ret, cache_reset))
+        # breakpoint()
+        return ret
 
     def _log_output(self, content: str) -> None:
         """Log output for history keeper."""
@@ -222,6 +261,9 @@ set -g default-terminal "screen-256color"
         # Set custom socket
         env['TERM'] = 'xterm-256color'
         env["TMUX_TMPDIR"] = str(self._socket_dir)
+        if self._terminal_size:
+            env['LINES'] = str(self._terminal_size['rows'])
+            env["COLUMNS"] = str(self._terminal_size['cols'])
         return env
 
     def _get_attach_tty(self):
@@ -309,39 +351,43 @@ set -g default-terminal "screen-256color"
         start_command = f"cd {cwd} && exec {' '.join([shell] + args)}"
 
         try:
-            # Create new session detached
-            self._run_tmux([
-                "new-session",
-                "-d",
-                "-s", self._socket_name,
-                "-n", "main",
-                "-e", "TERM=xterm-256color",
-                start_command,
-            ])
-
-            self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"])
-
-            # set -g status off
-            # set -g mouse off
-            self._run_tmux(["set-option", "-g", "status", "off"])
-            self._run_tmux(["set-option", "-g", "mouse", "off"])
-
-            # set-environment -r TMUX
-            self._run_tmux(["set-environment", "-r", "TMUX"])
-
-            # unbind "Ctrl b" normal
-            self._run_tmux(["unbind-key", "C-b"])
-
-            # unbind-key -a
-            self._run_tmux(["unbind-key", "-a"])
-
-            # Set environment variables
-            for key, value in profile_env.items():
+            # Check if we are "attaching" to an existing session
+            if self.is_running():
+                logger.debug("[TmuxSession] Attaching to existing session")
+            else:
+                # Create new session detached
                 self._run_tmux([
-                    "set-environment",
-                    "-t", self._socket_name,
-                    key, value,
-                ], check=False)
+                    "new-session",
+                    "-d",
+                    "-s", self._socket_name,
+                    "-n", "main",
+                    "-e", "TERM=xterm-256color",
+                    start_command,
+                ])
+
+                self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"])
+
+                # set -g status off
+                # set -g mouse off
+                self._run_tmux(["set-option", "-g", "status", "off"])
+                self._run_tmux(["set-option", "-g", "mouse", "off"])
+
+                # set-environment -r TMUX
+                self._run_tmux(["set-environment", "-r", "TMUX"])
+
+                # unbind "Ctrl b" normal
+                self._run_tmux(["unbind-key", "C-b"])
+
+                # unbind-key -a
+                self._run_tmux(["unbind-key", "-a"])
+
+                # Set environment variables
+                for key, value in profile_env.items():
+                    self._run_tmux([
+                        "set-environment",
+                        "-t", self._socket_name,
+                        key, value,
+                    ], check=False)
 
             self._running = True
 
@@ -584,15 +630,46 @@ set -g default-terminal "screen-256color"
         except Exception as e:
             logger.debug(f"Resize error: {e}")
 
-    def is_running(self) -> bool:
-        """Check if tmux session is running."""
+
+    def _is_running(self) -> bool:
+        """Check if tmux session is running and socket exists."""
         try:
+            # First check if tmux reports the session as running
             result = self._run_tmux([
                 "has-session",
                 "-t", self._socket_name,
             ], check=False)
-            return result.returncode == 0
-        except Exception:
+            if result.returncode != 0:
+                logger.debug(f"[TmuxSession] Session {self._socket_name} not found by tmux")
+                return False
+            
+            # Then verify the socket actually exists on filesystem
+            socket_path = Path(self._socket_path)
+            if not socket_path.exists():
+                logger.debug(f"[TmuxSession] Socket file {socket_path} does not exist")
+                return False
+            
+            # Additional check: verify we can get basic session info
+            # This ensures the socket is actually functional
+            try:
+                info_result = self._run_tmux([
+                    "display-message",
+                    "-p", 
+                    "-t", self._target,
+                    "#{session_id}"
+                ], check=False)
+                if info_result.returncode != 0:
+                    logger.debug(f"[TmuxSession] Socket exists but session is not accessible")
+                    return False
+            except Exception as e:
+                logger.debug(f"[TmuxSession] Failed to verify session accessibility: {e}")
+                return False
+            
+            logger.debug(f"[TmuxSession] Session {self._socket_name} is running and socket is accessible")
+            return True
+        except Exception as e:
+            traceback.print_exc()
+            logger.debug(f"[TmuxSession] Error checking session status: {e}")
             return False
 
     def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
@@ -670,6 +747,11 @@ unsetenv STY
         # Create custom environment with SCREENDIR for socket location
         env = {**os.environ}
         env["SCREENDIR"] = str(self._socket_dir)
+
+        if self._terminal_size:
+            env['LINES'] = str(self._terminal_size['rows'])
+            env["COLUMNS"] = str(self._terminal_size['cols'])
+            
         env.pop("STY", None)  # Unset STY for nested session support
 
         logger.trace("[ScreenSession] Running screen command with SCREENDIR=%s: %s" % (self._socket_dir, " ".join(cmd)))
@@ -790,7 +872,10 @@ unsetenv STY
 
             screen_cmd.extend(["bash", "-c", start_command])
 
-            self._run_screen(screen_cmd)
+            if not self.is_running():
+                self._run_screen(screen_cmd)
+            else:
+                logger.debug("[ScreenSession] Attaching to existing session")
 
             self._running = True
 
@@ -927,15 +1012,60 @@ unsetenv STY
             logger.debug(f"[ScreenSession] Screen resize error: {e}")
 
 
-    def is_running(self) -> bool:
-        """Check if screen session is running."""
+    def _is_running(self) -> bool:
+        """Check if screen session is running and socket exists."""
         try:
+            # First check if screen reports the session as running
             result = self._run_screen([
                 "-ls",
             ], check=False)
             # Check if our session name appears in the output
-            return self._session_name in result.stdout or str(self._socket_path) in result.stdout
-        except Exception:
+            if not (self._session_name in result.stdout or str(self._socket_path) in result.stdout):
+                logger.debug(f"[ScreenSession] Session {self._session_name} not found by screen")
+                return False
+            
+            # Then verify the socket directory and socket file actually exist
+            socket_dir = self._socket_dir
+            if not socket_dir.exists():
+                logger.debug(f"[ScreenSession] Socket directory {socket_dir} does not exist")
+                return False
+            
+            # For screen, we need to check for the socket file pattern
+            # Screen creates socket files in SCREENDIR with pattern: pid.sessionname
+            try:
+                import glob
+                socket_pattern = str(socket_dir / f"*.{self._session_name}")
+                socket_files = glob.glob(socket_pattern)
+                
+                if not socket_files:
+                    logger.debug(f"[ScreenSession] No socket files found for session {self._session_name}")
+                    return False
+                
+                # Check if any of the socket files are accessible
+                for socket_file in socket_files:
+                    socket_path = Path(socket_file)
+                    if socket_path.exists() and socket_path.is_socket():
+                        # Extract PID from socket filename and verify process is running
+                        pid_str = socket_path.name.split('.')[0]
+                        try:
+                            pid = int(pid_str)
+                            proc_path = Path(f"/proc/{pid}")
+                            if proc_path.exists():
+                                logger.debug(f"[ScreenSession] Session {self._session_name} is running with PID {pid}")
+                                return True
+                        except (ValueError, FileNotFoundError):
+                            continue
+                
+                logger.debug(f"[ScreenSession] Socket files found but no running process detected")
+                return False
+                
+            except Exception as e:
+                logger.debug(f"[ScreenSession] Error checking socket files: {e}")
+                return False
+            
+        except Exception as e:
+            traceback.print_exc()
+            logger.debug(f"[ScreenSession] Error checking session status: {e}")
             return False
 
     def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
@@ -1094,12 +1224,12 @@ class SessionManager:
         return None
 
 
-def get_session_manager(*args, **kwargs) -> SessionManager:
+def get_session_manager() -> SessionManager:
     """Get or create the global session manager instance."""
     global _singleton_session_manager
     if not _singleton_session_manager:
-        logger.info("Creating global session manager instance with params args=%s, kwargs=%s", args, kwargs)
-        _singleton_session_manager = SessionManager(*args, **kwargs)
+        logger.info("Creating global session manager instance")
+        _singleton_session_manager = SessionManager()
     else:
         logger.info("Using existing global session manager instance")
 

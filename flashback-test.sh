@@ -13,5 +13,5 @@ source .venv/bin/activate
 uv pip install --reinstall .[dev,embedding,screenshot,search]
 
 # remove default data storage
-rm -rf /home/jamesbrown/.local/share/flashback-terminal
+# rm -rf /home/jamesbrown/.local/share/flashback-terminal
 flashback-terminal $@

@@ -90,10 +90,10 @@ async def lifespan(app: FastAPI):
         global capture_scheduler
         capture_scheduler = CaptureWorkerScheduler(db)
         capture_scheduler.start()
-        # loop = asyncio.new_event_loop()
-        # loop.create_task(capture_scheduler_thread())
-        # threading.Thread(target=loop.run_forever, daemon=True).start()
-        asyncio.create_task(capture_scheduler_thread())
+        loop = asyncio.new_event_loop()
+        loop.create_task(capture_scheduler_thread())
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        # asyncio.create_task(capture_scheduler_thread())
         logger.info("Capture scheduler initialized")
     else:
         logger.warning("Capture scheduler disabled")

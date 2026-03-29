@@ -187,6 +187,20 @@ class TerminalTab {
                 this.uuid = msg.uuid;
                 this.name = msg.name;
                 this.updateTabTitle();
+                
+                // Show restoration notification if applicable
+                if (msg.restored) {
+                    this.terminal.writeln(`\r\n[flashback] Session restored successfully`);
+                }
+                break;
+            case 'session_restored':
+                this.terminal.writeln(`\r\n[flashback] ${msg.message}`);
+                break;
+            case 'session_unavailable':
+                this.terminal.writeln(`\r\n[flashback] ${msg.message}`);
+                break;
+            case 'session_created':
+                this.terminal.writeln(`\r\n[flashback] ${msg.message}`);
                 break;
             case 'title_change':
                 this.handleTitleChange(msg.title);
@@ -494,17 +508,147 @@ class App {
 
     async openSessions() {
         document.getElementById('sessions-modal').classList.remove('hidden');
+        await this.loadSessions();
+    }
 
+    async loadSessions() {
         const response = await fetch('/api/sessions');
         const data = await response.json();
 
         const container = document.getElementById('sessions-list');
-        container.innerHTML = data.sessions.map(s => `
-            <div class="session-item">
-                <span>${s.name}</span>
-                <span class="status ${s.status}">${s.status}</span>
+        
+        if (data.sessions.length === 0) {
+            container.innerHTML = '<div class="no-sessions">No sessions found</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="sessions-header">
+                <div class="sessions-title">Sessions (${data.sessions.length})</div>
+                <button class="btn-refresh" onclick="app.loadSessions()">Refresh</button>
             </div>
-        `).join('');
+        ` + data.sessions.map(s => {
+            const createdDate = new Date(s.created_at);
+            const formattedDate = createdDate.toLocaleString();
+            
+            // Determine what actions are available for this session
+            let actionButtons = '';
+            
+            if (s.is_running) {
+                // Session is already running, can switch to it
+                actionButtons = `
+                    <button class="btn-switch" onclick="app.switchToSession('${s.uuid}')">Switch To</button>
+                `;
+            } else if (s.can_attach) {
+                // Session can be attached/restored
+                actionButtons = `
+                    <button class="btn-attach" onclick="app.attachToSession('${s.uuid}')">Attach</button>
+                    <button class="btn-restore" onclick="app.restoreSession('${s.uuid}')">Restore</button>
+                `;
+            } else {
+                // Session is not available for attachment
+                actionButtons = `
+                    <span class="status-unavailable">Unavailable</span>
+                `;
+            }
+
+            return `
+                <div class="session-item">
+                    <div class="session-info">
+                        <div class="session-name">${s.name}</div>
+                        <div class="session-details">
+                            <div class="session-uuid">UUID: ${s.uuid}</div>
+                            <div class="session-created">Created: ${formattedDate}</div>
+                            ${s.last_cwd ? `<div class="session-cwd">Last CWD: ${s.last_cwd}</div>` : ''}
+                            <div class="session-profile">Profile: ${s.profile_name}</div>
+                        </div>
+                    </div>
+                    <div class="session-status">
+                        <span class="status ${s.status}">${s.status}</span>
+                        <div class="session-actions">
+                            ${actionButtons}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async switchToSession(sessionUuid) {
+        // Check if we already have a tab for this session
+        const existingTab = this.tabs.find(t => t.uuid === sessionUuid);
+        if (existingTab) {
+            this.switchTab(existingTab);
+            this.closeSessionsModal();
+            return;
+        }
+
+        // Create a new tab for the existing session
+        await this.createTab(sessionUuid);
+        this.closeSessionsModal();
+    }
+
+    async attachToSession(sessionUuid) {
+        try {
+            this.showLoading(`Attaching to session ${sessionUuid}...`);
+            
+            const response = await fetch(`/api/sessions/${sessionUuid}/attach`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to attach to session');
+            }
+            
+            const result = await response.json();
+            console.log('Attached to session:', result);
+            
+            // Create a new tab for the attached session
+            await this.createTab(sessionUuid);
+            this.closeSessionsModal();
+            this.hideLoading();
+            
+        } catch (error) {
+            console.error('Failed to attach to session:', error);
+            this.showError(`Failed to attach to session: ${error.message}`);
+            this.hideLoading();
+        }
+    }
+
+    async restoreSession(sessionUuid) {
+        try {
+            this.showLoading(`Restoring session ${sessionUuid}...`);
+            
+            // Create a new tab with the session UUID - the WebSocket handler will attempt restoration
+            await this.createTab(sessionUuid);
+            this.closeSessionsModal();
+            this.hideLoading();
+            
+        } catch (error) {
+            console.error('Failed to restore session:', error);
+            this.showError(`Failed to restore session: ${error.message}`);
+            this.hideLoading();
+        }
+    }
+
+    closeSessionsModal() {
+        document.getElementById('sessions-modal').classList.add('hidden');
+    }
+
+    showLoading(message) {
+        // Show loading indicator (you can implement this as needed)
+        console.log('Loading:', message);
+    }
+
+    hideLoading() {
+        // Hide loading indicator
+        console.log('Loading complete');
+    }
+
+    showError(message) {
+        // Show error message (you can implement this as needed)
+        alert(message); // Simple implementation, you might want to use a better UI
     }
 }
 

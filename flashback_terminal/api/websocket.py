@@ -30,11 +30,42 @@ class TerminalWebSocketHandler:
         config = get_config()
 
         session = self.terminal_manager.get_session(session_uuid)
+        was_restored = False
         if not session:
             db_session = self.db.get_session_by_uuid(session_uuid)
-            if db_session and db_session.status == "active":
-                pass
+            if db_session:
+                # Try to restore/reattach to the session
+                logger.info(f"[WebSocket] Attempting to restore session {session_uuid}")
+                session = self.terminal_manager.restore_session(session_uuid)
+                
+                if session:
+                    was_restored = True
+                    await websocket.send_json({
+                        "type": "session_restored", 
+                        "message": f"Session '{db_session.name}' restored successfully",
+                        "uuid": session_uuid,
+                        "name": db_session.name
+                    })
+                else:
+                    # Session exists but cannot be restored (socket not accessible)
+                    await websocket.send_json({
+                        "type": "session_unavailable", 
+                        "message": f"Session '{db_session.name}' exists but is not accessible. The underlying terminal session may have ended.",
+                        "uuid": session_uuid,
+                        "name": db_session.name,
+                        "can_recreate": True
+                    })
+                    # Create a new session instead
+                    session = self.terminal_manager.create_session()
+                    if session:
+                        session_uuid = session.uuid
+                        await websocket.send_json({
+                            "type": "session_created", 
+                            "message": "Created new session instead",
+                            "uuid": session_uuid
+                        })
             else:
+                # No existing session, create new one
                 session = self.terminal_manager.create_session()
                 if session:
                     session_uuid = session.uuid
@@ -66,6 +97,7 @@ class TerminalWebSocketHandler:
                 "type": "session_info",
                 "uuid": session_uuid,
                 "name": self.db.get_session(session.session_id).name if session.session_id else "Terminal",
+                "restored": was_restored,  # Indicates if this was a restored session
             }
         )
 
@@ -74,10 +106,17 @@ class TerminalWebSocketHandler:
             await self._restore_cwd(websocket, session)
 
         try:
-            while True:
-                # Read from terminal - on_output callback handles WebSocket send
-                session.read(timeout=0.05)
 
+            session_ready = False
+            for _ in range(10):
+                session_ready = session._session._is_running()
+                if session_ready: break
+                else:
+                    await asyncio.sleep(0.1)
+            if not session_ready:
+                logger.error("Session is not ready after 1 second. Disconnecting.")
+            while session_ready:
+                session.read(timeout=0.05)
                 try:
                     message = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                     await self._handle_message(websocket, session, message)
