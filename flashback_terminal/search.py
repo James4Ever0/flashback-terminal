@@ -1,19 +1,16 @@
 """Search functionality for flashback-terminal."""
 
 import asyncio
-import math
-import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from flashback_terminal.logger import logger
-from flashback_terminal.bm25_index import BM25SQLiteIndexAsync
+from flashback_terminal.whoosh_index import WhooshIndexAsync
 
 
 try:
     import jieba
-
     JIEBA_AVAILABLE = True
 except ImportError:
     JIEBA_AVAILABLE = False
@@ -23,32 +20,23 @@ from flashback_terminal.database import Database
 
 
 class BM25Search:
-    """BM25 text search over terminal output using async SQLite index."""
+    """Whoosh full-text search over terminal output using async index."""
 
     def __init__(self, db: Database):
         self.db = db
         self.config = get_config()
-        self.k1 = self.config.get("search.bm25.k1", 1.5)
-        self.b = self.config.get("search.bm25.b", 0.75)
         self.rebuild_interval = self.config.get("search.bm25.rebuild_interval_seconds", 10)
         
-        # Initialize BM25 index
-        index_path = Path(self.config.search_index_dir) / "bm25_index.db"
-        self.bm25_index = BM25SQLiteIndexAsync(
-            db_path=str(index_path),
-            tokenizer=self._tokenize,
-            k1=self.k1,
-            b=self.b
+        # Initialize Whoosh index
+        index_path = Path(self.config.search_index_dir) / "whoosh_index"
+        self.bm25_index = WhooshIndexAsync(
+            index_dir=str(index_path),
+            use_chinese=JIEBA_AVAILABLE
         )
         
         # Background task for index rebuilding
         self._rebuild_task = None
         self._initialized = False
-
-    def _tokenize(self, text: str) -> List[str]:
-        if JIEBA_AVAILABLE:
-            return list(jieba.lcut_for_search(text.lower()))
-        return re.findall(r"\b\w+\b", text.lower())
     
     async def initialize(self) -> None:
         """Initialize the BM25 index and start background rebuilding."""
@@ -69,21 +57,21 @@ class BM25Search:
         
         logger.debug(f"[BM25Search] Processing {len(rows)} terminal output records")
         
-        # Clear existing index and rebuild
-        await self.bm25_index.clear_all()
         
         # Add documents to index
+        documents = []
         for row in rows:
             doc_id = row["id"]
             content = row["text_content"]
-            try:
-                await self.bm25_index.add_document(doc_id, content)
-            except Exception as e:
-                logger.warning(f"[BM25Search] Failed to add document {doc_id}: {e}")
+            documents.append((doc_id, content))
+        try:
+            await self.bm25_index.add_documents(documents)
+        except Exception as e:
+            logger.warning("[BM25Search] Failed to batch add document")
         
         logger.debug(f"[BM25Search] Index rebuilt with {self.bm25_index.num_docs} documents")
 
-    def search(
+    async def search(
         self, query: str, session_ids: Optional[List[int]] = None, top_k: int = 50
     ) -> List[Tuple[int, float]]:
         """Search using the BM25 index."""
@@ -91,7 +79,7 @@ class BM25Search:
             return []
         
         # Get raw results from BM25 index
-        raw_results = self.bm25_index.query(query, top_k * 2)  # Get more to filter
+        raw_results = await self.bm25_index.query(query, top_k * 2)  # Get more to filter
         
         # Convert doc_id strings to integers and filter by session if needed
         results = []
@@ -264,7 +252,7 @@ class SearchEngine:
             if not self.bm25:
                 return []
             # Index is built automatically in background, just search
-            results = self.bm25.search(query, session_ids, limit)
+            results = await self.bm25.search(query, session_ids, limit)
 
         elif mode == "semantic":
             if not self.embedding:
@@ -276,7 +264,7 @@ class SearchEngine:
             embedding_results = []
 
             if self.bm25:
-                bm25_results = self.bm25.search(query, session_ids, limit * 2)
+                bm25_results = await self.bm25.search(query, session_ids, limit * 2)
             if self.embedding:
                 embedding_results = await self.embedding.search(query, session_ids, limit * 2)
 

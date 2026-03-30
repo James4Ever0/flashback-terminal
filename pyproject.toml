@@ -53,8 +53,10 @@ screenshot = [
 ]
 search = [
     "jieba>=0.42.1",
+    "whoosh>=2.7.4",
 ]
 dev = [
+    "pyinstrument>=5.1.0",
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "black>=23.0",
