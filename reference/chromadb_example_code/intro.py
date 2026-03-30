@@ -1,4 +1,8 @@
-# Chroma could be overkill. Let's use some pure vector search engine instead? it uses onnxruntime for sentence transformer. maybe we should also use onnxruntime for whisper or image embedding models? is there anything like whisper-rs? checkout deepwiki for screenpipe?
+# Chroma could be overkill. Let's use some pure vector search engine instead? it uses onnxruntime for sentence transformer. maybe we should also use onnxruntime for whisper or image embedding models? is there anything like whisper-rs? checkout deepwiki for screenpipe (https://deepwiki.com/screenpipe/screenpipe/2.3-audio-processing)?
+
+# example repo for whisper, image embedding and more (transformer.js): https://github.com/chroma-core/chromadb-default-embed
+
+# example usage: https://realpython.com/chromadb-vector-database/
 
 import chromadb
 # setup Chroma in-memory, for easy prototyping. Can add persistence easily!
