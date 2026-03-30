@@ -18,17 +18,14 @@ import subprocess
 import tempfile
 import termios
 import time
-import uuid
 import parse
 import traceback
 import json
 from abc import ABC, abstractmethod
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from flashback_terminal.config import get_config
-from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
 
 _singleton_session_manager = None

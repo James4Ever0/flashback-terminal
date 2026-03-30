@@ -3,7 +3,7 @@
 import logging
 import sys
 from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 
 class Logger:

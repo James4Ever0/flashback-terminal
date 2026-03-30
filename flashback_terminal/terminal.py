@@ -6,7 +6,6 @@ This enables backend screenshot capture and text extraction.
 
 import uuid as uuid_mod
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from flashback_terminal.config import get_config
@@ -14,7 +13,6 @@ from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
 from flashback_terminal.session_manager import (
     BaseSession,
-    SessionManager,
     SessionCapture,
     get_session_manager,
 )

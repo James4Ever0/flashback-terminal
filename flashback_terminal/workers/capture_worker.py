@@ -4,9 +4,6 @@ Captures terminal content from screen/tmux sessions and renders screenshots
 using agg_python_bindings.
 """
 
-import json
-import os
-import tempfile
 import time
 import traceback
 from datetime import datetime
@@ -16,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from flashback_terminal.config import get_config
 from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
-from flashback_terminal.session_manager import SessionManager, SessionCapture, get_session_manager
+from flashback_terminal.session_manager import get_session_manager
 
 
 class CaptureWorker:

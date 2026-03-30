@@ -3,8 +3,6 @@
 import os
 import time
 from pathlib import Path
-from typing import Optional
-
 import requests
 
 from flashback_terminal.config import get_config

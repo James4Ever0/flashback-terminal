@@ -1,7 +1,6 @@
 """Configuration loader for flashback-terminal."""
 
 import copy
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
