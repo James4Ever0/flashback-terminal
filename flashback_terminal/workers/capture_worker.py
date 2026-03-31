@@ -15,6 +15,15 @@ from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
 from flashback_terminal.session_manager import get_session_manager
 
+def convert_lf_to_crlf(data: str) -> str:
+    """
+    Convert LF to CRLF.
+    First normalize CRLF -> LF, then LF -> CRLF.
+    This ensures all lines end with CRLF without doubling existing CRs.
+    """
+    data = data.replace('\r\n', '\n')   # normalize CRLF to LF
+    data = data.replace('\n', '\r\n')   # convert all LFs to CRLF
+    return data
 
 class CaptureWorker:
     """Worker that captures terminal content from screen/tmux sessions."""
@@ -173,6 +182,7 @@ class CaptureWorker:
             logger.error(f"[CaptureWorker] Failed to capture session {session_id}: {e}")
             return None
 
+    # TODO: store column and rows data when the ansi dump is taken.
     def _render_screenshot(
         self, session_uuid: str, session_db_id: int, ansi_content: str, cols:int, rows:int, 
     ) -> Optional[str]:
@@ -208,6 +218,13 @@ class CaptureWorker:
 
             # Create terminal emulator and render
             emulator = self._renderer.TerminalEmulator(cols, rows)
+
+            # We cannot feed this "ANSI" content directly. Instead we must do unix2dos against the ansi content, converting all \n to \r\n
+            # In https://github.com/james4ever0/vimgolf-gym we use ptyprocess for running vim. Maybe it is out of luck we always have \r\n as line break.
+            ansi_content = convert_lf_to_crlf(ansi_content)
+            # First line captured missing. Need \r\n prefix? Or because the thing on the right handside is too much?
+            ansi_content = ansi_content.rstrip()
+
             emulator.feed_str(ansi_content)
             emulator.screenshot(str(filepath))
 

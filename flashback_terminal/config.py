@@ -72,7 +72,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "enabled": True,
             "interval_seconds": 10,
             "max_captures_per_session": 1000,
-            "capture_full_scrollback": True,
+            "capture_full_scrollback": False, # set to True will damage performance, and introduce bugs (we do not know how to get the terminal dimensions from the full scrollback, maybe we have to set to tmux default scrollback limit as capture row count?)
         },
     },
     "workers": {

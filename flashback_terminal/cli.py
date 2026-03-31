@@ -164,7 +164,7 @@ session_manager:
     enabled: true
     interval_seconds: 10
     max_captures_per_session: 1000
-    capture_full_scrollback: true
+    capture_full_scrollback: false
 
 modules:
   history_keeper:

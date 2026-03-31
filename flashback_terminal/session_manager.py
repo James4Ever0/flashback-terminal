@@ -1134,6 +1134,7 @@ unsetenv STY
                 # -h flag for hardcopy (dump scrollback buffer)
                 hardcopy_args = ["-X", "hardcopy"]
                 if full_scrollback:
+                    # dump history buffer.
                     hardcopy_args.append("-h")
                 hardcopy_args.append(temp_path)
 
@@ -1145,7 +1146,7 @@ unsetenv STY
                     content = await f.read()
                 
                 if not content:
-                    logger.warning("[ScreenSession] No ansi result in capture for session: %s" % self._socket_path)
+                    logger.warning("[ScreenSession] No text result in capture for session: %s" % self._socket_path)
 
                 return SessionCapture(
                     text=content,
