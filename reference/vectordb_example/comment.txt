@@ -1,0 +1,1 @@
+this sucks. python3.10 with no luck to install. maybe it requires specific python version to install? or i need docker image? really nonsense.

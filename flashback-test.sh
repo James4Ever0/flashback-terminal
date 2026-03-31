@@ -12,8 +12,19 @@ fi
 source .venv/bin/activate
 uv pip install --reinstall .[dev,embedding,screenshot,search]
 
-# remove default data storage
-rm -rf /home/jamesbrown/.local/share/flashback-terminal
-# remove tmux/screen sockets
-rm -rf /home/jamesbrown/.flashback-terminal
+# if developing terminal reattach, then we should not remove them.
+
+# DEV_REATTACH=0
+DEV_REATTACH=1
+
+if [ $DEV_REATTACH -eq 0 ]; then
+    echo "Not in dev reattach mode, removing cache files"
+    echo "Remove default data storage"
+    rm -rf /home/jamesbrown/.local/share/flashback-terminal
+    echo "Remove tmux/screen sockets"
+    rm -rf /home/jamesbrown/.flashback-terminal
+else
+    echo "In reattach dev mode, so cache files kept"
+fi
+
 flashback-terminal $@
