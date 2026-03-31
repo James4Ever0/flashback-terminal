@@ -226,6 +226,7 @@ class CaptureWorker:
             ansi_content = ansi_content.rstrip()
 
             emulator.feed_str(ansi_content)
+            # TODO: log terminal cursor location, width and height along with terminal ansi output, and put cursor to the designated location. (agg_python_bindings does not have "set_cursor" method. you have to either directly attach to the terminal and feed output instead)
             emulator.screenshot(str(filepath))
 
             logger.debug(f"[CaptureWorker] Rendered screenshot: {filepath}")
