@@ -9,7 +9,7 @@ try:
     from usearch.index import Index
 except ImportError:
     raise ImportError("usearch package is required. Install with: pip install usearch")
- 
+
 class USearchIndex:
     """
     Thread-safe USearch index wrapper with persistence.
