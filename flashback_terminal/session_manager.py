@@ -8,6 +8,7 @@ Local PTY mode has been removed in favor of multiplexers for:
 """
 import asyncio
 from re import A
+import trace
 import aiofiles
 import pty
 import fcntl
@@ -126,6 +127,12 @@ class BaseSession(ABC):
         self._terminal_size: Optional[dict[str, int]] = None
         self._is_running_cache_ttl = 5
         self._is_running_last_cache: Optional[dict] = None
+
+    @abstractmethod
+    async def redraw(self) -> bool:
+        """Redraw the terminal, useful for websocket reconnect"""
+        # however it is best not to use "attach" or "reattach" if the underlying socket is simply "gone"?
+        pass
 
     @abstractmethod
     async def start(self) -> bool:
@@ -250,6 +257,15 @@ set -g default-terminal "screen-256color"
             env['LINES'] = str(self._terminal_size['rows'])
             env["COLUMNS"] = str(self._terminal_size['cols'])
         return env
+    
+    async def redraw(self) -> bool:
+        try:
+            await self._run_tmux(['refresh-client'])
+            return True
+        except:
+            exc = traceback.format_exc()
+            logger.error("[TmuxSession] redraw failed:\n%s" % exc)
+        return False
 
     def _get_attach_tty(self):
         try:
@@ -758,6 +774,16 @@ unsetenv STY
         self._pty_fd: Optional[int] = None
         self._read_mode: Optional[str] = None
         self.pid: Optional[int] = None
+
+    
+    async def redraw(self) -> bool:
+        try:
+            await self._run_screen(['-X', 'redisplay'])
+            return True
+        except:
+            exc = traceback.format_exc()
+            logger.error("[ScreenSession] redraw failed:\n%s" % exc)
+        return False
 
     async def _run_screen(self, args: List[str], check: bool = True, get_output:bool=False, input=None) -> subprocess.CompletedProcess:
         """Run screen command with custom socket."""

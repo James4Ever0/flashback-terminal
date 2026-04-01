@@ -249,7 +249,19 @@ async def attach_to_session(session_uuid: str):
     # Check if session is already running in terminal manager
     if session_uuid in terminal_manager.sessions:
         logger.warning(f"Session {session_uuid} is already running in terminal manager")
-        raise HTTPException(status_code=409, detail="Session is already running")
+        # check if it is attached to websocket manager
+        if session_uuid in ws_handler.active_connections:
+            raise HTTPException(status_code=409, detail="Session is already running and attached.")
+        else:
+            # just return the result
+            db_session = await db.get_session_by_uuid(session_uuid)
+            session_name = db_session.name if db_session else "Unknown"
+            return {
+                "uuid": session_uuid,
+                "name": session_name,
+                "status": "reattached", # when reattached, history may not preserve? might need to recreate the underlying session again?
+                "message": "Successfully reattached to session"
+            }
     
     # Get session from database
     session = await db.get_session_by_uuid(session_uuid)
