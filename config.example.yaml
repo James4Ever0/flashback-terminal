@@ -187,8 +187,8 @@ webui:
 # Profile presets for new terminals
 profiles:
   - name: "default"
-    shell: null
-    args: []
+    shell: "/bin/bash"
+    args: ["-c", "unset TMUX TMUX_PANE TMUX_WINDOW TMUX_SESSION TMUX_TMPDIR SCREENDIR STY; exec bash"]
     env: {}
     cwd: "~"
     description: "Standard shell"
