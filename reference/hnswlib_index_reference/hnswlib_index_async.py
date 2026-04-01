@@ -8,7 +8,7 @@ import asyncio
 import numpy as np
 from typing import List, Optional, Tuple, Dict, Union
 import concurrent.futures
-from sync import HNSWIndex
+from hnswlib_index_sync import HNSWIndex
 
 
 class AsyncHNSWIndex:
