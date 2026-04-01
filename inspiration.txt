@@ -7,3 +7,5 @@ we may even use a different programming language to compile it into static execu
 however, we may have difficulty "finding/connecting" to the terminal. we may still have to interact, attach and manage it in the web terminal. otherwise we have to spin up a new one instead, kill the old one first? or we could use linux signal to "focus" that window/tab?
 
 i suspect most of the time spent is io based. checking whether a process is alive, reading from file descriptor, writing to a file descriptor, etc. namely, "is_running", "read", "write". replace with aiofiles, asyncio.subprocess, asyncio.sleep, or just simply "await" on read?
+
+if you want to refactor code, the best way to do this is to plan it ahead. or ask ai to plan it ahead. first fix small problems in your usages with old code space, then ask ai to rewrite it somehow based on new architecture.
