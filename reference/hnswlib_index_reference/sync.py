@@ -23,7 +23,7 @@ class HNSWIndex:
 
     def __init__(
         self,
-        db_path: str,
+        db_path: Union[str, Path],
         dim: int,
         space: str = "l2",
         max_elements: int = 10000,
@@ -66,12 +66,12 @@ class HNSWIndex:
 
         self._need_save = False
 
-        atexit.register(self._save) # save the db for whatever reason at exit.
+        atexit.register(self._atexit_save) # save the db for whatever reason at exit.
 
         if index_file.exists() and yaml_file.exists():
             # Load metadata and check dimensions/space
             with open(yaml_file, 'r') as f:
-                meta = yaml.safe_load(f)
+                meta:dict = yaml.safe_load(f)
             saved_dim = meta.get('dim')
             saved_space = meta.get('space')
             if saved_dim != dim:
@@ -102,6 +102,11 @@ class HNSWIndex:
     # -------------------------------------------------------------------------
     # Persistence
     # -------------------------------------------------------------------------
+
+    def _atexit_save(self) -> None:
+        with self.rw_lock():
+            self._save()
+            
     def _save(self) -> None:
         """Save the index and metadata to disk. Assumes write lock is held."""
         if not self._need_save: return
