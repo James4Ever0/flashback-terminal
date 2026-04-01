@@ -24,3 +24,10 @@
 - [ ] why bm25index background process will not skip quickly indexed ones? skip those already in memory, do not read from database, just use in memory index. also mark those missing in database.
 - [ ] increase logging in bm25 sqlite, make it async. why loading from db is damn slow? and refreshing index too? is it because of too large of the document length? log that too. log time used for each document. show warning for large document and long loading time, long loop and long function calls.
 - [ ] add healthcheck api endpoint in backend, (already added in /healthcheck, will return {"status": "ok"}) test if terminal is offline in frontend, reattach if possible from frontend. (backend may also persist session, but leave it for simplicity for now? or use a button called "reattach all unattached, running sessions" in frontend?)
+- [ ] only allow one frontend page at a time?
+- [ ] restore all background running sessions at page open, or create a new one if none running?
+- [ ] If you do not attach all terminals in the very beginning, some sessions may not be captured.
+- [ ] If you attach to the same terminal multiple times, will you have trouble running multiple terminal capture workers in the background? shall we separate terminal capture from terminal io handling? also shall we log terminal input to db? schedule a db insert per xx char inputed, and do not insert if the same input is received within xx seconds, using asyncio.create_task() with timestamp to insert that data. terminal input shall be unique per session, per window. shall be no multiple input source at a time.
+- [ ] generate default terminal title based on terminal index from db, and allow user to change it, not generated from frontend javascript
+- [ ] allow user to close terminal window in frontend, close connection. however, do not terminate the background terminal session.
+- [ ] separate backend api for create, stop, restore, attach sessions.

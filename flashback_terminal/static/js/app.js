@@ -142,22 +142,6 @@ class TerminalTab {
         });
     }
 
-    // processEscapeSequences(data) {
-    //     // Look for OSC (Operating System Command) escape sequences for title changes
-    //     // Pattern: ESC ] 0 ; title BEL or ESC ] 0 ; title ST
-    //     const titlePattern = /\x1b\]0;([^\x07\x1b\\]+)\x07|\x1b\]0;([^\x1b\\]+)\x1b\\/g;
-    //     let match;
-        
-    //     while ((match = titlePattern.exec(data)) !== null) {
-    //         const title = match[1] || match[2];
-    //         if (title && title !== this.lastDetectedTitle) {
-    //             this.lastDetectedTitle = title;
-    //             FrontendLogger.info(`Detected title change from terminal: ${title}`);
-    //             this.handleTitleChange(title);
-    //         }
-    //     }
-    // }
-
     handleMessage(msg) {
         switch (msg.type) {
             case 'output':
@@ -333,7 +317,8 @@ class App {
 
         document.getElementById('btn-do-search').addEventListener('click', () => this.doSearch());
 
-        await this.createTab();
+        // TODO: only if no tab to attach (all tabs in background are not running), we would create a new one instead. otherwise attach existing ones.
+        // await this.createTab();
     }
 
     setActiveTabTitle() {
@@ -589,6 +574,8 @@ class App {
     }
 
     async attachToSession(sessionUuid) {
+        const exitLog = FrontendLogger.logFunction('App.attachToSession');
+
         try {
             this.showLoading(`Attaching to session ${sessionUuid}...`);
             
@@ -605,7 +592,14 @@ class App {
             console.log('Attached to session:', result);
             
             // Create a new tab for the attached session
-            await this.createTab(sessionUuid);
+            const tab = new TerminalTab(result.uuid, result.name);
+            tab.app=this;
+            this.tabs.push(tab);
+            await tab.connect();
+
+            this.switchTab(tab);
+            this.renderTabs();
+
             this.closeSessionsModal();
             this.hideLoading();
             
@@ -617,14 +611,34 @@ class App {
     }
 
     async restoreSession(sessionUuid) {
+        const exitLog = FrontendLogger.logFunction('App.restoreSession');
+
         try {
             this.showLoading(`Restoring session ${sessionUuid}...`);
             
-            // Create a new tab with the session UUID - the WebSocket handler will attempt restoration
-            await this.createTab(sessionUuid);
+            const response = await fetch(`/api/sessions/${sessionUuid}/restore`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to attach to session');
+            }
+            
+            const result = await response.json();
+            console.log('Attached to session:', result);
+            
+            // Create a new tab for the attached session
+            const tab = new TerminalTab(result.uuid, result.name);
+            tab.app=this;
+            this.tabs.push(tab);
+            await tab.connect();
+
+            this.switchTab(tab);
+            this.renderTabs();
+
             this.closeSessionsModal();
             this.hideLoading();
-            
         } catch (error) {
             console.error('Failed to restore session:', error);
             this.showError(`Failed to restore session: ${error.message}`);

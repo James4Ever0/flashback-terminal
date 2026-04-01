@@ -174,8 +174,12 @@ class TerminalManager:
             return None
         
         # Get session manager and create a temporary session to check socket existence
-        session_manager = get_session_manager()
         config = get_config()
+
+        term_session = self.get_session(session_uuid)
+        if term_session:
+            logger.info(f"[TerminalManager] Session {session_uuid} already exists")
+            return term_session
         
         # Create a temporary session object just to check if the underlying socket/session exists
         try:
@@ -183,21 +187,9 @@ class TerminalManager:
             
             if db_session.session_type == "tmux":
                 socket_dir = config.get("session_manager.tmux.socket_dir", "~/.flashback-terminal/tmux")
-                temp_session = session_manager._sessions.get(session_uuid)
-                if not temp_session:
-                    temp_session = session_manager.create_session(
-                        session_id=session_uuid,
-                        name=f"Restore-{db_session.name}",
-                        profile=profile,
-                        on_output=None,
-                        on_clear=None,
-                        on_cursor=None
-                    )
-                
-                # Check if the tmux session is actually running and socket exists
-                if temp_session and await temp_session.is_running():
-                    logger.info(f"[TerminalManager] Tmux session {session_uuid} is running and accessible")
-                    
+                # TODO: access socket later.
+                socket_accessible = True
+                if socket_accessible:
                     # Create proper TerminalSession wrapper
                     terminal_session = TerminalSession(
                         session_id=db_session.id,
@@ -205,17 +197,17 @@ class TerminalManager:
                         db=self.db,
                         profile=profile,
                     )
-                    
-                    # Set the underlying session reference
-                    terminal_session._session = temp_session
-                    terminal_session._running = True
-                    
+
+                    if not await terminal_session.start():
+                        logger.error(f"[TerminalManager] Failed to start terminal session {session_uuid}")
+                        return None
+                        
                     # Update database to reflect actual status - only after confirming socket exists
                     await self.db.update_session(db_session.id, status="active")
-                    
+                        
                     # Add to active sessions
                     self.sessions[session_uuid] = terminal_session
-                    
+                            
                     logger.info(f"[TerminalManager] Successfully restored session {session_uuid}")
                     return terminal_session
                 else:
@@ -223,39 +215,28 @@ class TerminalManager:
                     # Update database to reflect actual status
                     await self.db.update_session(db_session.id, status="inactive")
                     return None
-                    
             elif db_session.session_type == "screen":
                 socket_dir = config.get("session_manager.screen.socket_dir", "~/.flashback-terminal/screen")
-                temp_session = session_manager._sessions.get(session_uuid)
-                if not temp_session:
-                    temp_session = session_manager.create_session(
-                        session_id=session_uuid,
-                        name=f"Restore-{db_session.name}",
-                        profile=profile,
-                        on_output=None,
-                        on_clear=None,
-                        on_cursor=None
-                    )
-                
-                # Check if the screen session is actually running and socket exists
-                if temp_session and await temp_session.is_running():
-                    logger.info(f"[TerminalManager] Screen session {session_uuid} is running and accessible")
-                    
+                socket_accessible=True
+                if socket_accessible:
                     # Create proper TerminalSession wrapper
                     terminal_session = TerminalSession(
                         session_id=db_session.id,
                         uuid=session_uuid,
                         db=self.db,
                         profile=profile,
+                        on_output=None,
+                        on_clear=None,
+                        on_cursor=None
                     )
-                    
-                    # Set the underlying session reference
-                    terminal_session._session = temp_session
-                    terminal_session._running = True
+
+                    if not await terminal_session.start():
+                        logger.error(f"[TerminalManager] Failed to start terminal session {session_uuid}")
+                        return None
                     
                     # Update database to reflect actual status - only after confirming socket exists
                     await self.db.update_session(db_session.id, status="active")
-                    
+
                     # Add to active sessions
                     self.sessions[session_uuid] = terminal_session
                     
@@ -266,11 +247,9 @@ class TerminalManager:
                     # Update database to reflect actual status
                     await self.db.update_session(db_session.id, status="inactive")
                     return None
-                    
             else:
                 logger.error(f"[TerminalManager] Unsupported session type: {db_session.session_type}")
                 return None
-                
         except Exception as e:
             logger.error(f"[TerminalManager] Error restoring session {session_uuid}: {e}")
             # Update database to reflect actual status

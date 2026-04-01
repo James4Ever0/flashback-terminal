@@ -7,6 +7,7 @@ Local PTY mode has been removed in favor of multiplexers for:
 - Server-side terminal content extraction
 """
 import asyncio
+from re import A
 import aiofiles
 import pty
 import fcntl
@@ -168,19 +169,6 @@ class BaseSession(ABC):
     async def _is_running(self) -> bool:
         ...
 
-    # def is_running(self) -> bool:
-    #     return self._is_running()
-    #     pass
-    
-    # def is_running(self)-> bool:
-    # #     """Check if session is running."""
-    # #     for line in traceback.format_stack():
-    #         # print(line.strip())
-    #     ret= self._is_running()
-    #     logger.debug('[BaseSession] is_running called_time=%s, result=%s' % (time.time(), ret))
-    #     breakpoint()
-    #     return ret
-
     async def is_running(self) -> bool:
         # logger.debug("[BaseSession] Calling is_running at time: %s", time.time())
         ret = False
@@ -231,7 +219,7 @@ class TmuxSession(BaseSession):
         self._socket_path = self._socket_dir / self._socket_name
         self._tmux_binary = "tmux"
         self._target = f"{self._socket_name}:0.0"
-        self._config_file: Optional[str] = None
+        self._config_file: Optional[Path] = None
         self._running = False
         self._pty_fd: Optional[int] = None
         self.pid: Optional[int] = None
@@ -266,7 +254,7 @@ set -g default-terminal "screen-256color"
     def _get_attach_tty(self):
         try:
             self.pid, self._pty_fd = pty.fork()
-            args = [ '-S', str(self._socket_path), 'attach']
+            args = ['-S', str(self._socket_path), 'attach']
             logger.debug(f"[TmuxSession] Child process execvpe: tmux {' '.join(args)}")
             if self.pid == 0:
                 # self._running = False
@@ -305,7 +293,7 @@ set -g default-terminal "screen-256color"
             "-T", "mouse,256,focus,title"
         ]
         if self._config_file:
-            cmd.extend(["-f", self._config_file])
+            cmd.extend(["-f", str(self._config_file)])
         else:
             # Add kiosk config
             self._config_file = self._socket_dir / f"{self._socket_name}.conf"
@@ -368,11 +356,13 @@ set -g default-terminal "screen-256color"
 
         # Build command to start shell
         start_command = f"cd {cwd} && exec {' '.join([shell] + args)}"
+        attach_existing = False
 
         try:
             # Check if we are "attaching" to an existing session
             if await self.is_running():
-                logger.debug("[TmuxSession] Attaching to existing session")
+                logger.debug("[TmuxSession] Attaching to existing session %s" % self.session_id)
+                attach_existing= True
             else:
                 # Create new session detached
                 await self._run_tmux([
@@ -432,19 +422,20 @@ set -g default-terminal "screen-256color"
 
             logger.info(f"[TmuxSession] Tmux session started: {self._socket_name}")
             # execute init commands
-            logger.info(f"[TmuxSession] Executing init commands: {self.init_commands}")
-            for cmd in self.init_commands:
-                escaped = cmd.replace('"', '\\"')
-                await self._run_tmux([
-                    "send-keys",
-                    "-t", self._target,
-                    escaped,
-                ], check=False)
-                await self._run_tmux([
-                    "send-keys",
-                    "-t", self._target,
-                    "Enter",
-                ], check=False)
+            if not attach_existing:
+                logger.info(f"[TmuxSession] Executing init commands: {self.init_commands}")
+                for cmd in self.init_commands:
+                    escaped = cmd.replace('"', '\\"')
+                    await self._run_tmux([
+                        "send-keys",
+                        "-t", self._target,
+                        escaped,
+                    ], check=False)
+                    await self._run_tmux([
+                        "send-keys",
+                        "-t", self._target,
+                        "Enter",
+                    ], check=False)
             return True
 
         except Exception as e:
@@ -762,7 +753,7 @@ unsetenv STY
         self._socket_path = self._socket_dir / self._session_name
         self._screen_binary = "screen"
         self._running = False
-        self._config_file: Optional[str] = None
+        self._config_file: Optional[Path] = None
         self._pty_fd: Optional[int] = None
         self._read_mode: Optional[str] = None
         self.pid: Optional[int] = None
@@ -911,10 +902,11 @@ unsetenv STY
                 "-d", "-m",  # Detached mode
                 "-s", shell,
             ]
+            attach_existing=False
 
             # Add custom config if provided
             if self._config_file:
-                screen_cmd.extend(["-c", self._config_file])
+                screen_cmd.extend(["-c", str(self._config_file)])
             else:
                 # Add kiosk config
                 self._config_file = self._socket_dir / f"{self._session_name}_config.rc"
@@ -926,7 +918,8 @@ unsetenv STY
             if not await self.is_running():
                 await self._run_screen(screen_cmd)
             else:
-                logger.debug("[ScreenSession] Attaching to existing session")
+                logger.debug("[ScreenSession] Attaching to existing session %s" % self.session_id)
+                attach_existing= True
 
             self._running = True
 
@@ -953,14 +946,15 @@ unsetenv STY
             logger.info(f"[ScreenSession] Screen session started: {self._session_name}")
 
             logger.info(f"[ScreenSession] Executing init commands: {self.init_commands}")
-            for cmd in self.init_commands:
-                escaped = cmd.replace("'", "'\"'\"'")
-                await self._run_screen([
-                    "-X", "stuff", escaped,
-                ], check=False)
-                await self._run_screen([
-                    "-X", "stuff", "\n",
-                ], check=False)
+            if not attach_existing:
+                for cmd in self.init_commands:
+                    escaped = cmd.replace("'", "'\"'\"'")
+                    await self._run_screen([
+                        "-X", "stuff", escaped,
+                    ], check=False)
+                    await self._run_screen([
+                        "-X", "stuff", "\n",
+                    ], check=False)
             return True
 
         except Exception as e:

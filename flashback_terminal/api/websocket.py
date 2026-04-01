@@ -31,7 +31,11 @@ class TerminalWebSocketHandler:
 
         session = self.terminal_manager.get_session(session_uuid)
         was_restored = False
-        if not session:
+
+        if session:
+            logger.info(f"[WebSocket] Session {session_uuid} already exists")
+            # print type of session.
+        else:
             db_session = await self.db.get_session_by_uuid(session_uuid)
             if db_session:
                 # Try to restore/reattach to the session
@@ -66,11 +70,13 @@ class TerminalWebSocketHandler:
                         })
             else:
                 # No existing session, create new one
+                logger.info("[WebSocket] Creating new session")
                 session = await self.terminal_manager.create_session()
                 if session:
                     session_uuid = session.uuid
 
         if not session:
+            logger.info("[WebSocket] Failed to create terminal session")
             await websocket.send_json(
                 {"type": "error", "message": "Failed to create terminal session"}
             )
@@ -80,13 +86,21 @@ class TerminalWebSocketHandler:
         self.active_connections[session_uuid] = websocket
 
         def on_output(data: str) -> None:
+            logger.info(f"[WebSocket] Output event: {data}")
             asyncio.create_task(self._send_output(session_uuid, data))
 
         def on_clear() -> None:
+            logger.info("[WebSocket] Clear event")
             asyncio.create_task(self._send_clear(session_uuid))
         
         def on_cursor(col:int, row:int) -> None:
+            logger.info(f"[WebSocket] Cursor event: col={col}, row={row}")
             asyncio.create_task(self._send_cursor(session_uuid, col, row))
+
+        logger.info(f"[WebSocket] Session type: {type(session)}")
+        logger.info(f"[WebSocket] Session is running: {await session.is_running()}")
+
+        # never made it here, maybe it is not TerminalSession?
 
         session.on_output = on_output
         session.on_clear = on_clear
@@ -114,7 +128,7 @@ class TerminalWebSocketHandler:
                 else:
                     await asyncio.sleep(0.1)
             if not session_ready:
-                logger.error("Session is not ready after 1 second. Disconnecting.")
+                logger.error("[WebSocket] Session is not ready after 1 second. Disconnecting.")
             # Create two asyncio looping tasks: one for terminal output, one for websocket messages
             async def read_terminal():
                 while session_ready:
@@ -130,7 +144,7 @@ class TerminalWebSocketHandler:
                     except WebSocketDisconnect:
                         break
                     except Exception as e:
-                        logger.error(f"WebSocket receive error: {e}")
+                        logger.error(f"[WebSocket] WebSocket receive error: {e}")
                         break
             
             terminal_task = asyncio.create_task(read_terminal())

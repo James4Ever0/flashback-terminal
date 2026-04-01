@@ -13,14 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-
 from flashback_terminal.api.websocket import TerminalWebSocketHandler
 from flashback_terminal.config import get_config
 from flashback_terminal.database import Database
 from flashback_terminal.logger import Logger, log_function, logger
 from flashback_terminal.retention import RetentionManager
 from flashback_terminal.search import SearchEngine
-from flashback_terminal.terminal import TerminalManager
+from flashback_terminal.session_manager import get_session_manager
+from flashback_terminal.terminal import TerminalManager, TerminalSession
 from flashback_terminal.workers.capture_worker import CaptureWorkerScheduler
 
 # Global instances
@@ -233,11 +233,6 @@ async def index(request: Request):
 async def terminal_websocket(websocket: WebSocket, session_uuid: str):
     """WebSocket endpoint for terminal sessions."""
     if ws_handler:
-        # execute this corotine in separate thread
-        # def handle_websocket_threaded():
-        #     loop = asyncio.new_event_loop()
-        #     loop.run_until_complete(ws_handler.handle(websocket, session_uuid))
-        # threading.Thread(target=handle_websocket_threaded, daemon=True).start()
         await ws_handler.handle(websocket, session_uuid)
 
 
@@ -265,39 +260,55 @@ async def attach_to_session(session_uuid: str):
     if session.status not in ("active", "running"):
         logger.error(f"Session {session_uuid} is not active (status: {session.status})")
         raise HTTPException(status_code=400, detail="Session is not active")
-    
     try:
-        # Create a terminal session from existing database session
-        from flashback_terminal.terminal import TerminalSession
-        
-        profile = get_config().get_profile(session.profile_name) or {}
-        terminal_session = TerminalSession(
-            session_id=session.id,
-            uuid=session.uuid,
-            db=db,
-            profile=profile,
-        )
         
         # Try to attach to existing session manager session
         # This requires the session manager to support reattaching
-        session_manager = terminal_manager.session_manager
+        session_manager = get_session_manager()
         existing_session = session_manager.get_session(session_uuid)
         
-        if existing_session and await existing_session.is_running():
-            # Create a new terminal session that wraps the existing backend session
-            terminal_session._session = existing_session
-            terminal_session._running = True
-            terminal_manager.sessions[session_uuid] = terminal_session
+        if existing_session:
+            if not await existing_session.is_running():
+                # TODO: session is dead, maybe we need to recreate from profile?
+                await terminal_manager.restore_session(session_uuid)
+            else:
+                profile = get_config().get_profile(session.profile_name) or {}
+                terminal_session = TerminalSession(
+                    session_id=session.id,
+                    uuid=session.uuid,
+                    db=db,
+                    profile=profile,
+                )
+                if await terminal_session.start():
+                    # Create a new terminal session that wraps the existing backend session
+                    terminal_session._session = existing_session
+                    terminal_session._running = True
+                    terminal_manager.sessions[session_uuid] = terminal_session
+                else:
+                    logger.error(f"Failed to start terminal session {session_uuid}")
+                    raise HTTPException(status_code=500, detail="Failed to start terminal session")
             
             logger.info(f"Successfully attached to session {session_uuid}")
             return {
-                "session_uuid": session_uuid,
+                "uuid": session_uuid,
+                "name": session.name,
                 "status": "attached",
                 "message": "Successfully attached to session"
             }
         else:
-            logger.error(f"Session {session_uuid} backend is not running")
-            raise HTTPException(status_code=400, detail="Session backend is not running")
+            await terminal_manager.restore_session(session_uuid)
+            restored_session = session_manager.get_session(session_uuid)
+            if restored_session:
+                await restored_session.is_running()
+                return {
+                    "uuid": session_uuid,
+                    "name": session.name,
+                    "status": "attached",
+                    "message": "Successfully attached to session"
+                }
+            else:
+                logger.error(f"Session {session_uuid} cannt be restored")
+                raise HTTPException(status_code=400, detail=f"Session {session_uuid} cannot be restored")
             
     except Exception as e:
         logger.error(f"Failed to attach to session {session_uuid}: {e}")
