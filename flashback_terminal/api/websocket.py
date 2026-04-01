@@ -147,6 +147,14 @@ class TerminalWebSocketHandler:
         session.on_clear = on_clear
         session.on_cursor = on_cursor
 
+        redraw_result = await session._session.redraw()
+        if not redraw_result:
+            logger.warning("[WebSocket] Failed to redraw session")
+            await websocket.send_json({
+                "type": "error",
+                "message": "Failed to redraw session"
+            })
+
         await websocket.send_json(
             {
                 "type": "session_info",
