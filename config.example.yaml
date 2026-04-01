@@ -16,7 +16,7 @@ data_dir: "~/.local/share/flashback-terminal"
 # Server configuration
 server:
   host: "127.0.0.1"
-  port: 8080
+  port: 9090
   # WebSocket settings
   ws_ping_interval: 20
   ws_ping_timeout: 10
