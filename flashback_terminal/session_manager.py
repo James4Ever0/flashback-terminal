@@ -775,8 +775,10 @@ unsetenv STY
         self._read_mode: Optional[str] = None
         self.pid: Optional[int] = None
 
-    
     async def redraw(self) -> bool:
+        return await self._redraw()
+
+    async def _redraw(self) -> bool:
         try:
             await self._run_screen(['-X', 'redisplay'])
             return True
@@ -997,6 +999,7 @@ unsetenv STY
             except Exception:
                 pass
             self._pty_fd = None
+        # TODO: Only close viewer fd, not to close session, handle them differently.
 
         try:
             await self._run_screen([
@@ -1073,6 +1076,7 @@ unsetenv STY
                 await self._run_screen([
                     "-X", "fit"
                 ], check=False)
+                await self._redraw()
                 return
             except Exception as e:
                 logger.debug(f"[ScreenSession] Pty resize failed, falling back to screen resize: {e}")
@@ -1082,6 +1086,7 @@ unsetenv STY
             await self._run_screen([
                 "-X", "fit"
             ], check=False)
+            await self._redraw()
             
             logger.debug(f"[ScreenSession] Resized to {rows}x{cols} using screen commands")
         except Exception as e:
