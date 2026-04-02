@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     global db, terminal_manager, ws_handler, search_engine, retention_manager
 
-    logger.info("Starting flashback-terminal lifespan manager")
+    logger.info("[Server] Starting flashback-terminal lifespan manager")
 
     config = get_config()
     
@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize capture scheduler for backend terminal capture
     if config.get("session_manager.capture.enabled", True):
-        logger.info("Initializing capture scheduler...")
+        logger.info("[Server] Initializing capture scheduler...")
         global capture_scheduler
         capture_scheduler = CaptureWorkerScheduler(db)
         capture_scheduler.start()
@@ -101,17 +101,17 @@ async def lifespan(app: FastAPI):
         loop.create_task(capture_scheduler_thread())
         threading.Thread(target=loop.run_forever, daemon=True).start()
         # asyncio.create_task(capture_scheduler_thread())
-        logger.info("Capture scheduler initialized")
+        logger.info("[Server] Capture scheduler initialized")
     else:
-        logger.warning("Capture scheduler disabled")
+        logger.warning("[Server] Capture scheduler disabled")
 
-    logger.info("flashback-terminal startup complete")
+    logger.info("[Server] flashback-terminal startup complete")
     yield
 
-    logger.info("Shutting down flashback-terminal...")
+    logger.info("[Server] Shutting down flashback-terminal...")
     if capture_scheduler:
         capture_scheduler.stop()
-    logger.info("Shutdown complete")
+    logger.info("[Server] Shutdown complete")
 
 
 async def capture_scheduler_thread():
@@ -200,9 +200,9 @@ async def index(request: Request):
 
     if os.environ.get('CLI_VERBOSITY'):
         verbosity = int(os.environ.get('CLI_VERBOSITY'))
-        logger.debug(f"Using CLI verbosity: {verbosity}")
+        logger.debug(f"[Server] Using CLI verbosity: {verbosity}")
 
-    logger.debug(f"Serving index page with verbosity={verbosity}")
+    logger.debug(f"[Server] Serving index page with verbosity={verbosity}")
 
     # Create template context
     context = {
@@ -240,15 +240,15 @@ async def terminal_websocket(websocket: WebSocket, session_uuid: str):
 @log_function(Logger.DEBUG)
 async def attach_to_session(session_uuid: str):
     """Attach to an existing terminal session."""
-    logger.info(f"Attach request for session: {session_uuid}")
+    logger.info(f"[Server] Attach request for session: {session_uuid}")
     
     if not terminal_manager:
-        logger.error("Terminal manager not available")
+        logger.error("[Server] Terminal manager not available")
         raise HTTPException(status_code=503, detail="Terminal manager not available")
     
     # Check if session is already running in terminal manager
     if session_uuid in terminal_manager.sessions:
-        logger.warning(f"Session {session_uuid} is already running in terminal manager")
+        logger.warning(f"[Server] Session {session_uuid} is already running in terminal manager")
         # check if it is attached to websocket manager
         if session_uuid in ws_handler.active_connections:
             raise HTTPException(status_code=409, detail="Session is already running and attached.")
@@ -266,11 +266,11 @@ async def attach_to_session(session_uuid: str):
     # Get session from database
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
-        logger.error(f"Session {session_uuid} not found in database")
+        logger.error(f"[Server] Session {session_uuid} not found in database")
         raise HTTPException(status_code=404, detail="Session not found")
     
     if session.status not in ("active", "running"):
-        logger.error(f"Session {session_uuid} is not active (status: {session.status})")
+        logger.error(f"[Server] Session {session_uuid} is not active (status: {session.status})")
         raise HTTPException(status_code=400, detail="Session is not active")
     try:
         
@@ -297,10 +297,10 @@ async def attach_to_session(session_uuid: str):
                     terminal_session._running = True
                     terminal_manager.sessions[session_uuid] = terminal_session
                 else:
-                    logger.error(f"Failed to start terminal session {session_uuid}")
+                    logger.error(f"[Server] Failed to start terminal session {session_uuid}")
                     raise HTTPException(status_code=500, detail="Failed to start terminal session")
             
-            logger.info(f"Successfully attached to session {session_uuid}")
+            logger.info(f"[Server] Successfully attached to session {session_uuid}")
             return {
                 "uuid": session_uuid,
                 "name": session.name,
@@ -319,11 +319,11 @@ async def attach_to_session(session_uuid: str):
                     "message": "Successfully attached to session"
                 }
             else:
-                logger.error(f"Session {session_uuid} cannt be restored")
+                logger.error(f"[Server] Session {session_uuid} cannt be restored")
                 raise HTTPException(status_code=400, detail=f"Session {session_uuid} cannot be restored")
             
     except Exception as e:
-        logger.error(f"Failed to attach to session {session_uuid}: {e}")
+        logger.error(f"[Server] Failed to attach to session {session_uuid}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to attach to session: {str(e)}")
 
 
@@ -357,7 +357,7 @@ async def list_sessions(
                 "created_at": s.created_at.isoformat(),
                 "status": s.status,
                 "last_cwd": s.last_cwd,
-                "is_running": s.uuid in running_sessions,
+                "is_running": s.uuid in running_sessions and terminal_manager.sessions[s.uuid].is_running_buffered and await terminal_manager.sessions[s.uuid]._session._is_running(),
                 "can_attach": s.status in ("active", "running") and s.uuid not in running_sessions,
             }
             for s in sessions
@@ -376,12 +376,12 @@ async def create_session(profile: str = "default", name: Optional[str] = None):
     # update db?
 
     if not session:
-        logger.error(f"Failed to create session: profile={profile}, name={name}")
+        logger.error(f"[Server] Failed to create session: profile={profile}, name={name}")
         raise HTTPException(status_code=500, detail="Failed to create session")
 
     await terminal_manager.db.rename_session_by_uuid(session.uuid, session_name)
 
-    logger.info(f"Session created: id={session.session_id}, uuid={session.uuid}, name={session_name}")
+    logger.info(f"[Server] Session created: id={session.session_id}, uuid={session.uuid}, name={session_name}")
 
     return {
         "session_id": session.session_id,
@@ -434,7 +434,47 @@ async def delete_session(session_uuid: str):
 @app.post("/api/sessions/{session_uuid}/restore")
 async def restore_session(session_uuid: str):
     """Restore an archived session."""
-    raise HTTPException(status_code=501, detail="Archive restoration not yet implemented")
+    logger.debug("[Server] Restoring session: %s" % session_uuid)
+
+    db_session = await db.get_session_by_uuid(session_uuid)
+    session_name = db_session.name if db_session else "Unknown"
+
+    # stop all running session matching this uuid
+    if session_uuid in terminal_manager.sessions:
+        try:
+            await terminal_manager.sessions[session_uuid].stop()
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error stopping session: %s" % tb)
+        try:
+            del terminal_manager.sessions[session_uuid]
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error deleting session: %s" % tb)
+    # stop all websocket connections to this uuid
+    if session_uuid in ws_handler.active_connections:
+        try:
+            await ws_handler.active_connections[session_uuid].close()
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error closing websocket connection: %s" % tb)
+        try:
+            del ws_handler.active_connections[session_uuid]
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error deleting websocket connection: %s" % tb)
+    
+    sess = await terminal_manager.restore_session(session_uuid)
+    if sess:
+        return {
+            "uuid": session_uuid,
+            "name": session_name,
+            "status": "restored", # when restored, history may not preserve? might need to recreate the underlying session again?
+            "message": "Successfully reattached to session"
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to restore terminal session")
+        
 
 
 @app.get("/api/profiles")
@@ -449,10 +489,10 @@ async def list_profiles():
 @log_function(Logger.DEBUG)
 async def search(request: SearchRequest):
     """Search terminal history."""
-    logger.info(f"Search request: query={request.query[:50]}..., mode={request.mode}, scope={request.scope}")
+    logger.info(f"[Server] Search request: query={request.query[:50]}..., mode={request.mode}, scope={request.scope}")
 
     if not search_engine:
-        logger.error("Search not available - search_engine is None")
+        logger.error("[Server] Search not available - search_engine is None")
         raise HTTPException(status_code=503, detail="Search not available")
 
     target_session_ids = None
@@ -462,9 +502,9 @@ async def search(request: SearchRequest):
             session = await db.get_session_by_uuid(uuid)
             if session:
                 target_session_ids.append(session.id)
-        logger.debug(f"Search limited to session_ids: {target_session_ids}")
+        logger.debug(f"[Server] Search limited to session_ids: {target_session_ids}")
 
-    logger.debug("Executing search...")
+    logger.debug("[Server] Executing search...")
     results = await search_engine.search(
         query=request.query,
         mode=request.mode,
@@ -476,7 +516,7 @@ async def search(request: SearchRequest):
         filter_inactive=request.filter_inactive,
     )
 
-    logger.info(f"Search completed: found {len(results)} results")
+    logger.info(f"[Server] Search completed: found {len(results)} results")
 
     return {"query": request.query, "mode": request.mode, "results": results}
 
@@ -549,7 +589,7 @@ async def get_captures_timeline(
     limit: int = Query(50, ge=1, le=200),
 ):
     """Get terminal captures for timeline view."""
-    logger.debug(f"Timeline request: before={before_time}, around={around_time}, limit={limit}")
+    logger.debug(f"[Server] Timeline request: before={before_time}, around={around_time}, limit={limit}")
 
     captures = await db.get_terminal_captures_timeline(
         before_time=before_time,

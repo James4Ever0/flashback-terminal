@@ -104,7 +104,7 @@ class TerminalTab {
 
         this.socket.onopen = () => {
             FrontendLogger.info(`WebSocket connected: uuid=${this.uuid}`);
-            this.startScreenshotCapture();
+            // this.startScreenshotCapture();
             // resize terminal initially.
             this.fitAddon.fit();
             this.sendResize();
@@ -116,9 +116,47 @@ class TerminalTab {
             this.handleMessage(msg);
         };
 
-        this.socket.onclose = () => {
+        this.socket.onclose = async () => {
             FrontendLogger.info(`WebSocket closed: uuid=${this.uuid}`);
-            this.stopScreenshotCapture();
+            
+            // Check backend health first
+            try {
+                const healthResponse = await fetch('/healthcheck');
+                const isBackendHealthy = healthResponse.ok;
+                
+                if (!isBackendHealthy) {
+                    // Backend is down, likely network issue
+                    FrontendLogger.warn('Backend healthcheck failed - possible network issue');
+                    // TODO: Show reconnect notification when backend is back
+                    return;
+                }
+                
+                // Check if session is still running in backend
+                try {
+                    const sessionResponse = await fetch(`/api/sessions/${this.uuid}`);
+                    if (sessionResponse.ok) {
+                        const sessionData = await sessionResponse.json();
+                        if (sessionData.is_running) {
+                            // Session is still running, allow reconnection
+                            FrontendLogger.info('Session still running in backend - keeping tab available');
+                            // TODO: Show reconnect button/notification
+                        } else {
+                            // Session is not running, close tab
+                            FrontendLogger.info('Session no longer running in backend - closing tab');
+                            this?.app?.closeTab(this);
+                        }
+                    } else {
+                        FrontendLogger.warn('Failed to check session status - closing tab');
+                        this?.app?.closeTab(this);
+                    }
+                } catch (sessionError) {
+                    FrontendLogger.error('Error checking session status:', sessionError);
+                    this?.app?.closeTab(this);
+                }
+            } catch (healthError) {
+                FrontendLogger.error('Error during healthcheck:', healthError);
+                this?.app?.closeTab(this);
+            }
         };
 
         // Send input to PTY - PTY will echo back for display
@@ -206,40 +244,40 @@ class TerminalTab {
         }
     }
 
-    startScreenshotCapture() {
-        const interval = 10000;
-        this.screenshotInterval = setInterval(() => {
-            this.captureAndUpload();
-        }, interval);
-    }
+    // startScreenshotCapture() {
+    //     const interval = 10000;
+    //     this.screenshotInterval = setInterval(() => {
+    //         this.captureAndUpload();
+    //     }, interval);
+    // }
 
-    stopScreenshotCapture() {
-        if (this.screenshotInterval) {
-            clearInterval(this.screenshotInterval);
-            this.screenshotInterval = null;
-        }
-    }
+    // stopScreenshotCapture() {
+    //     if (this.screenshotInterval) {
+    //         clearInterval(this.screenshotInterval);
+    //         this.screenshotInterval = null;
+    //     }
+    // }
 
-    captureAndUpload() {
-        const canvas = this.terminal.element.querySelector('canvas');
-        if (!canvas) return;
+    // captureAndUpload() {
+    //     const canvas = this.terminal.element.querySelector('canvas');
+    //     if (!canvas) return;
 
-        canvas.toBlob((blob) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                const base64data = reader.result;
-                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                    this.socket.send(JSON.stringify({
-                        type: 'command',
-                        cmd: 'screenshot_upload',
-                        timestamp: new Date().toISOString(),
-                        data: base64data
-                    }));
-                }
-            };
-            reader.readAsDataURL(blob);
-        }, 'image/png');
-    }
+    //     canvas.toBlob((blob) => {
+    //         const reader = new FileReader();
+    //         reader.onloadend = () => {
+    //             const base64data = reader.result;
+    //             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+    //                 this.socket.send(JSON.stringify({
+    //                     type: 'command',
+    //                     cmd: 'screenshot_upload',
+    //                     timestamp: new Date().toISOString(),
+    //                     data: base64data
+    //                 }));
+    //             }
+    //         };
+    //         reader.readAsDataURL(blob);
+    //     }, 'image/png');
+    // }
 
     focus() {
         this.terminal.focus();
@@ -282,7 +320,7 @@ class TerminalTab {
     }
 
     dispose() {
-        this.stopScreenshotCapture();
+        // this.stopScreenshotCapture();
         if (this.socket) {
             this.socket.close();
         }
@@ -763,22 +801,39 @@ class App {
             // Determine what actions are available for this session
             let actionButtons = '';
             
+            // how do you know it is "running"? has websocket connection? or "is_attached"?
+            // logic is unclear. to be refactored.
+            // if the socket is gone, then it must not be running.
+            // check it in backend.
             if (s.is_running) {
-                // Session is already running, can switch to it
-                actionButtons = `
+                // Check if we have this tab?
+                const existingTab = this.tabs.find(t => t.uuid === s.uuid);
+                if (existingTab)
+                {
+                    // Session is already running, can switch to it
+                    actionButtons = `
                     <button class="btn-switch" onclick="app.switchToSession('${s.uuid}')">Switch To</button>
-                `;
+                `;}
+                else{
+                    // Session is running but we don't have a tab for it
+                    actionButtons = `
+                    <button class="btn-attach" onclick="app.switchToSession('${s.uuid}')">Attach To (maybe already running elsewhere)</button>
+                `;}
             } else if (s.can_attach) {
                 // Session can be attached/restored
                 actionButtons = `
                     <button class="btn-attach" onclick="app.attachToSession('${s.uuid}')">Attach</button>
-                    <button class="btn-restore" onclick="app.restoreSession('${s.uuid}')">Restore</button>
                 `;
             } else {
                 // Session is not available for attachment
-                actionButtons = `
-                    <span class="status-unavailable">Unavailable</span>
-                `;
+                // BUT we might want to restore?
+                // i mean that restore thing shall be "clone"
+
+                actionButtons = `<button class="btn-restore" onclick="app.restoreSession('${s.uuid}')">Clone</button>`;
+
+                // actionButtons = `
+                //     <span class="status-unavailable">Unavailable</span>
+                // `;
             }
 
             return `

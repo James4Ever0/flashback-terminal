@@ -405,21 +405,21 @@ set -g default-terminal "screen-256color"
                     start_command,
                 ])
 
-                await self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"])
+                await self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"], check=False)
 
                 # set -g status off
                 # set -g mouse off
-                await self._run_tmux(["set-option", "-g", "status", "off"])
-                await self._run_tmux(["set-option", "-g", "mouse", "off"])
+                await self._run_tmux(["set-option", "-g", "status", "off"], check=False)
+                await self._run_tmux(["set-option", "-g", "mouse", "off"], check=False)
 
                 # set-environment -r TMUX
-                await self._run_tmux(["set-environment", "-r", "TMUX"])
+                await self._run_tmux(["set-environment", "-r", "TMUX"], check=False)
 
                 # unbind "Ctrl b" normal
-                await self._run_tmux(["unbind-key", "C-b"])
+                await self._run_tmux(["unbind-key", "C-b"], check=False)
 
                 # unbind-key -a
-                await self._run_tmux(["unbind-key", "-a"])
+                await self._run_tmux(["unbind-key", "-a"], check=False)
 
                 # Set environment variables
                 for key, value in profile_env.items():

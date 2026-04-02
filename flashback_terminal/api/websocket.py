@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict
 
+import traceback
+
 from fastapi import WebSocket, WebSocketDisconnect
 from PIL import Image
 
@@ -184,6 +186,19 @@ class TerminalWebSocketHandler:
                     await asyncio.sleep(0.1)
             if not session_ready:
                 logger.error("[WebSocket] Session is not ready after 1 second. Disconnecting.")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Session is not ready",
+                })
+                await websocket.close()
+                return
+            else:
+                # so shall we send something to let frontend know session is ready?
+                await websocket.send_json({
+                    "type": "session_ready",
+                    "uuid": session_uuid,
+                })
+            
             # Create two asyncio looping tasks: one for terminal output, one for websocket messages
             async def read_terminal():
                 while session_ready:
@@ -201,7 +216,9 @@ class TerminalWebSocketHandler:
                     except SessionTerminateException:
                         break
                     except Exception as e:
+                        tb = traceback.format_exc()
                         logger.error(f"[WebSocket] WebSocket receive error: {e}")
+                        logger.error(f"[WebSocket] Traceback: {tb}")
                         break
             
             terminal_task = asyncio.create_task(read_terminal())

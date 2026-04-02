@@ -46,6 +46,7 @@ class TerminalSession:
         self.sequence_num = 0
         self._cwd: Optional[str] = None
         self._running = False
+        self.is_running_buffered=False
 
     def _on_session_clear(self) -> None:
         """Handle clear event from underlying session."""
@@ -136,9 +137,11 @@ class TerminalSession:
 
     async def is_running(self) -> bool:
         """Check if the session is still running."""
+        ret = False
         if self._session and self._running:
-            return await self._session.is_running()
-        return False
+            ret = await self._session.is_running()
+        self.is_running_buffered = ret
+        return ret
 
     async def capture(self, full_scrollback: bool = False) -> Optional[SessionCapture]:
         """Capture session content (for backend screenshots)."""
