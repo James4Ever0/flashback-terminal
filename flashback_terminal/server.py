@@ -359,6 +359,7 @@ async def list_sessions(
                 "last_cwd": s.last_cwd,
                 "is_running": s.uuid in running_sessions and terminal_manager.sessions[s.uuid].is_running_buffered and await terminal_manager.sessions[s.uuid]._session._is_running(),
                 "can_attach": s.status in ("active", "running") and s.uuid not in running_sessions,
+                "socket_present": True, # to be implemented, only if you know this is a tmux or screen session.
             }
             for s in sessions
         ]
@@ -515,6 +516,10 @@ async def search(request: SearchRequest):
         time_range=request.time_range,
         filter_inactive=request.filter_inactive,
     )
+
+    for item in results:
+        # render search engine enrichment obsolete?
+        item['can_attach'] = item['session_uuid'] not in ws_handler.active_connections
 
     logger.info(f"[Server] Search completed: found {len(results)} results")
 

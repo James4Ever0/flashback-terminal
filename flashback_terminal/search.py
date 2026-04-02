@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from flashback_terminal.logger import logger
+# from flashback_terminal.server import ws_handler
 from flashback_terminal.whoosh_index import WhooshIndexAsync
 
 
@@ -339,10 +340,13 @@ class SearchEngine:
             pass  # If we can't check running status, continue without it
         
         for item in enriched:
+            # we shall check if this is in websocket connection list, if it is in, we cannot attach.
+
             item["can_attach"] = (
                 item["session_status"] in ("active", "running") and 
                 item["session_uuid"] not in running_sessions
             )
+
             item["is_running"] = item["session_uuid"] in running_sessions
 
         return enriched[:limit]

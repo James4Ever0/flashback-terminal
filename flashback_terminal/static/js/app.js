@@ -711,8 +711,13 @@ class App {
             }
 
             const data = await response.json();
-            this.renderSearchResults(data.results);
+
+            const allSessionsReponse = await fetch('/api/sessions');
+            const allSessionsData = await allSessionsReponse.json();
+
+            this.renderSearchResults(data.results, allSessionsData);
         } catch (error) {
+            console.log("Search failed:", error);
             this.renderSearchStatus('Request failed');
         }
     }
@@ -722,7 +727,7 @@ class App {
         container.innerHTML = `<div class="search-status">${message}</div>`;
     }
 
-    renderSearchResults(results) {
+    renderSearchResults(results, allSessionsData) {
         const container = document.getElementById('search-results');
 
         if (!results || results.length === 0) {
@@ -735,10 +740,50 @@ class App {
         // Get set of running terminal UUIDs
         const runningUuids = new Set(this.tabs.map(tab => tab.uuid));
 
+        var sessions_map = {};
+        for (let it of allSessionsData.sessions){
+            sessions_map[it.uuid] = it;
+        }
+
+        console.log("sessions map", sessions_map);
+
+
         const resultsHtml = results.map(r => {
             const isRunning = runningUuids.has(r.session_uuid);
-            const buttonClass = isRunning ? 'jump-btn' : 'jump-btn disabled';
-            const buttonText = isRunning ? 'Jump to Terminal' : 'Terminal Not Available';
+
+            // var buttonClass = 'jump-btn';
+            // var buttonText = "jump to terminal";
+            // var onClick = "";
+
+            var buttonClass = isRunning ? 'jump-btn' : 'jump-btn disabled';
+            var buttonText = isRunning ? 'Jump to Terminal' : 'Terminal Not Available';
+            var onClick = isRunning? `app.jumpToTerminal('${r.session_uuid}')` : '';
+
+            // if not in current opened tab set, at least we should get all session status?
+            
+            // console.log("allSessionsData:", allSessionsData);
+            // console.log("Session uuid:", r.session_uuid);
+
+            if (buttonClass !== 'jump-btn'){
+                const sess = sessions_map[r.session_uuid];
+
+                if (sess){
+                    // TODO: if it is attachable, socket present, then we shall attach to it. otherwise we clone it. add attribute: socket_present
+                    if (sess.is_running){
+                    buttonClass = 'btn-attach';
+                    buttonText = 'Attach';
+                    onClick = `app.attachToSession('${r.session_uuid}')`;
+                } else {
+                    buttonClass = 'btn-restore';
+                    buttonText = 'Clone';
+                    onClick = `app.restoreSession('${r.session_uuid}')`;
+                }}else{
+                    buttonClass = 'jump-btn disabled'
+                    buttonText = "Terminal not available"
+                    onClick = '';
+                }
+            }
+
 
             return `
             <div class="search-result">
@@ -747,7 +792,7 @@ class App {
                     <span class="timestamp">${r.timestamp}</span>
                 </div>
                 <pre class="result-content">${r.content.substring(0, 200)}...</pre>
-                <button class="${buttonClass}" data-uuid="${r.session_uuid}" ${isRunning ? '' : 'disabled'}>
+                <button class="${buttonClass}" data-uuid="${r.session_uuid}" onclick="${onClick}">
                     ${buttonText}
                 </button>
             </div>
@@ -756,12 +801,13 @@ class App {
         container.innerHTML = countFeedback + resultsHtml;
 
         // Add click handlers for jump buttons
-        container.querySelectorAll('.jump-btn:not(.disabled)').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const uuid = e.target.getAttribute('data-uuid');
-                this.jumpToTerminal(uuid);
-            });
-        });
+        // container.querySelectorAll('.jump-btn:not(.disabled)').forEach(btn => {
+        //     btn.addEventListener('click', (e) => {
+        //         const uuid = e.target.getAttribute('data-uuid');
+        //         this.jumpToTerminal(uuid);
+        //     });
+        // });
+
     }
 
     jumpToTerminal(uuid) {
