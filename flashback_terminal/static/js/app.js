@@ -170,6 +170,8 @@ class TerminalTab {
             case 'session_info':
                 this.uuid = msg.uuid;
                 this.name = msg.name;
+                // log session info
+                console.log(`[WebSocket] Session info: uuid=${this.uuid}, name=${this.name}`);
                 this.updateTabTitle();
                 
                 // Show restoration notification if applicable

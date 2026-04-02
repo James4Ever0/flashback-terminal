@@ -159,7 +159,7 @@ class TerminalWebSocketHandler:
             {
                 "type": "session_info",
                 "uuid": session_uuid,
-                "name": (await self.db.get_session(session.session_id)).name if session.session_id else "Terminal",
+                "name": (await self.db.get_session_by_uuid(session_uuid)).name if session_uuid else "Terminal",
                 "restored": was_restored,  # Indicates if this was a restored session
             }
         )
@@ -277,20 +277,26 @@ class TerminalWebSocketHandler:
         """Handle title change and broadcast to all connected clients."""
         logger.debug(f"[WebSocket] Title change: session={session.uuid}, title={title}")
         
-        # Broadcast title change to all clients connected to this session
-        message = {
-            "type": "title_change",
-            "title": title,
-            "uuid": session.uuid
-        }
+        # # Broadcast title change to all clients connected to this session
+        # message = {
+        #     "type": "title_change",
+        #     "title": title,
+        #     "uuid": session.uuid
+        # }
         
         # Send to all connected WebSocket clients
-        if hasattr(self, 'connections') and session.uuid in self.connections:
-            for websocket in self.connections[session.uuid]:
-                try:
-                    await websocket.send_text(json.dumps(message))
-                except Exception as e:
-                    logger.debug(f"[WebSocket] Failed to send title change: {e}")
+        if hasattr(self, 'active_connections') and session.uuid in self.active_connections:
+            # websocket = self.active_connections[session.uuid]
+            # try:
+            #     await websocket.send_text(json.dumps(message))
+            # except Exception as e:
+            #     logger.debug(f"[WebSocket] Failed to send title change: {e}")
+            # # now update the terminal title
+            try:
+                session._session.name = title
+                await session.db.rename_session_by_uuid(session.uuid, title)
+            except Exception as e:
+                logger.debug(f"[WebSocket] Failed to update session title to db: {e}")
 
     async def _handle_screenshot_upload(
         self, session: TerminalSession, msg: dict

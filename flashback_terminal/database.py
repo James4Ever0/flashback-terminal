@@ -229,6 +229,18 @@ class Database:
             if row:
                 return self._row_to_session(row)
             return None
+    
+    async def rename_session(self, session_id:int, name:str):
+        # TODO: check if we have the session.
+        async with self._connect() as conn:
+            await conn.execute("UPDATE sessions SET name = ? WHERE id = ?", (name, session_id))
+            await conn.commit()
+    
+    async def rename_session_by_uuid(self, uuid:str, name:str):
+        # TODO: check if we have the session.
+        async with self._connect() as conn:
+            await conn.execute("UPDATE sessions SET name = ? WHERE uuid = ?", (name, uuid))
+            await conn.commit()
 
     async def get_session_by_uuid(self, uuid: str) -> Optional[Session]:
         async with self._connect() as conn:
@@ -236,6 +248,20 @@ class Database:
             if row:
                 return self._row_to_session(row)
             return None
+    
+    async def update_session_by_uuid(self, uuid: int, **kwargs) -> None:
+        allowed = {"name", "last_cwd", "status", "ended_at", "last_active_at", "metadata",
+                   "session_type", "socket_path", "pane_id", "window_id"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [uuid]
+
+        async with self._connect() as conn:
+            await conn.execute(f"UPDATE sessions SET {set_clause} WHERE uuid = ?", values)
+            await conn.commit()
 
     async def update_session(self, session_id: int, **kwargs) -> None:
         allowed = {"name", "last_cwd", "status", "ended_at", "last_active_at", "metadata",

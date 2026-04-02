@@ -372,16 +372,21 @@ async def create_session(profile: str = "default", name: Optional[str] = None):
     logger.info(f"Creating new session: profile={profile}, name={name}")
 
     session = await terminal_manager.create_session(profile_name=profile, name=name)
+    session_name = name or f"Terminal {session.session_id}"
+    # update db?
+
     if not session:
         logger.error(f"Failed to create session: profile={profile}, name={name}")
         raise HTTPException(status_code=500, detail="Failed to create session")
 
-    logger.info(f"Session created: id={session.session_id}, uuid={session.uuid}")
+    await terminal_manager.db.rename_session_by_uuid(session.uuid, session_name)
+
+    logger.info(f"Session created: id={session.session_id}, uuid={session.uuid}, name={session_name}")
 
     return {
         "session_id": session.session_id,
         "uuid": session.uuid,
-        "name": name or f"Terminal {session.session_id}",
+        "name": session_name,
     }
 
 
