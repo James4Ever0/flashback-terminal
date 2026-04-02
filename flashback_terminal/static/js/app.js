@@ -641,13 +641,14 @@ class App {
         return false;
     }
 
-    handleDragEnd(e) {
+    handleDragEnd(e, tab) {
         // Clean up visual feedback
         document.querySelectorAll('.tab').forEach(tab => {
             tab.classList.remove('dragging');
             tab.classList.remove('drag-over');
         });
         this.draggedTabIndex = undefined;
+        this.switchTab(tab);
     }
 
     showTabPreview(tab, tabElement) {
@@ -752,7 +753,7 @@ class App {
             tabEl.addEventListener('dragstart', (e) => this.handleDragStart(e, i));
             tabEl.addEventListener('dragover', (e) => this.handleDragOver(e));
             tabEl.addEventListener('drop', (e) => this.handleDrop(e, i));
-            tabEl.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            tabEl.addEventListener('dragend', (e) => this.handleDragEnd(e, tab));
             tabEl.addEventListener('dragenter', (e) => this.handleDragEnter(e));
             tabEl.addEventListener('dragleave', (e) => this.handleDragLeave(e));
             
