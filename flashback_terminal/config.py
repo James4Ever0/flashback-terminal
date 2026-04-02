@@ -148,8 +148,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "profiles": [
         {
             "name": "default",
-            "shell": None,
-            "args": ["-c", "unset TMUX TMUX_PANE TMUX_WINDOW TMUX_SESSION TMUX_TMPDIR SCREENDIR STY; exec bash"],
+            "shell": '/bin/bash',
+            # this will cause shell to fail. handle it later.
+            # "args": ["-c", "unset TMUX TMUX_PANE TMUX_WINDOW TMUX_SESSION TMUX_TMPDIR SCREENDIR STY; exec bash"],
+            "args": [],
             "env": {},
             "cwd": "~",
             "description": "Standard shell",
