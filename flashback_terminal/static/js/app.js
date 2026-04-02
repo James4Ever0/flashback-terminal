@@ -58,6 +58,8 @@ const FrontendLogger = {
 // Log initial verbosity
 FrontendLogger.info(`Frontend initialized with verbosity level ${FrontendLogger.getVerbosity()}`);
 
+// TODO: when hover on terminal tab title, show details like connection backend (tmux/screen), connection status, last activity time, description, profile name etc.
+
 class TerminalTab {
     constructor(uuid, name) {
         FrontendLogger.debug(`TerminalTab constructor: uuid=${uuid}, name=${name}`);
@@ -293,6 +295,98 @@ class App {
         FrontendLogger.debug('App constructor');
         this.tabs = [];
         this.activeTab = null;
+        this.STORAGE_KEY = 'flashback-terminal-tabs';
+    }
+
+    saveTabState() {
+        const tabState = {
+            tabs: this.tabs.map(tab => ({
+                uuid: tab.uuid,
+                name: tab.name,
+                originalName: tab.originalName,
+                titleOverride: tab.titleOverride
+            })),
+            activeTabUuid: this.activeTab ? this.activeTab.uuid : null,
+            timestamp: new Date().toISOString()
+        };
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(tabState));
+        FrontendLogger.debug(`Tab state saved: ${this.tabs.length} tabs`);
+    }
+
+    getSavedTabState() {
+        try {
+            const saved = localStorage.getItem(this.STORAGE_KEY);
+            if (saved) {
+                const tabState = JSON.parse(saved);
+                FrontendLogger.debug(`Found saved tab state: ${tabState.tabs.length} tabs from ${tabState.timestamp}`);
+                return tabState;
+            }
+        } catch (error) {
+            FrontendLogger.warn('Failed to parse saved tab state:', error);
+        }
+        return null;
+    }
+
+    clearSavedTabState() {
+        localStorage.removeItem(this.STORAGE_KEY);
+        FrontendLogger.debug('Saved tab state cleared');
+    }
+
+    async restoreTabs() {
+        const savedState = this.getSavedTabState();
+        if (!savedState || !savedState.tabs.length) {
+            FrontendLogger.info('No saved tabs to restore');
+            return;
+        }
+
+        FrontendLogger.info(`Restoring ${savedState.tabs.length} tabs from saved state`);
+        
+        const restoredTabs = [];
+        let activeTabRestored = null;
+
+        for (const savedTab of savedState.tabs) {
+            try {
+                // Try to attach to existing session
+                const response = await fetch(`/api/sessions/${savedTab.uuid}/attach`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    FrontendLogger.info(`Successfully restored tab: ${savedTab.name} (${savedTab.uuid})`);
+                    
+                    // Create tab instance
+                    const tab = new TerminalTab(result.uuid, result.name);
+                    tab.originalName = savedTab.originalName;
+                    tab.titleOverride = savedTab.titleOverride;
+                    tab.app = this;
+                    
+                    this.tabs.push(tab);
+                    await tab.connect();
+                    restoredTabs.push(tab);
+                    
+                    // Set as active tab if it was the active one
+                    if (savedTab.uuid === savedState.activeTabUuid) {
+                        activeTabRestored = tab;
+                    }
+                } else {
+                    FrontendLogger.warn(`Failed to restore tab: ${savedTab.name} (${savedTab.uuid}) - session may not be available`);
+                }
+            } catch (error) {
+                FrontendLogger.error(`Error restoring tab ${savedTab.name}:`, error);
+            }
+        }
+
+        // Switch to the previously active tab, or the first restored tab
+        if (restoredTabs.length > 0) {
+            const tabToSwitch = activeTabRestored || restoredTabs[0];
+            this.switchTab(tabToSwitch);
+            this.renderTabs();
+            FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
+        } else {
+            FrontendLogger.warn('No tabs could be restored');
+            this.clearSavedTabState(); // Clear invalid state
+        }
     }
 
     async init() {
@@ -321,6 +415,9 @@ class App {
 
         // TODO: only if no tab to attach (all tabs in background are not running), we would create a new one instead. otherwise attach existing ones.
         // await this.createTab();
+        
+        // Restore previous tabs if available
+        await this.restoreTabs();
     }
 
     setActiveTabTitle() {
@@ -336,6 +433,7 @@ class App {
             FrontendLogger.info(`Setting title for active tab: ${newTitle}`);
             this.activeTab.setTitle(newTitle);
             titleInput.value = ''; // Clear input after setting
+            this.saveTabState(); // Save state after title change
         } else {
             FrontendLogger.warn('Empty title provided, ignoring');
         }
@@ -365,6 +463,8 @@ class App {
         await tab.connect();
         this.switchTab(tab);
         this.renderTabs();
+        // Save tab state after creating new tab
+        this.saveTabState();
     }
 
     switchTab(tab) {
@@ -379,19 +479,161 @@ class App {
         // Update window title to reflect active tab
         const displayName = tab.titleOverride || tab.name || tab.originalName;
         document.title = `${displayName} - flashback-terminal`;
+        
+        // Save state after switching tabs
+        this.saveTabState();
+    }
+
+    closeTab(tab) {
+        FrontendLogger.info(`Closing tab: uuid=${tab.uuid}`);
+        
+        // Find index of the tab
+        const tabIndex = this.tabs.indexOf(tab);
+        if (tabIndex === -1) return;
+        
+        // Send disconnect message to backend before closing
+        if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
+            tab.socket.send(JSON.stringify({
+                type: 'disconnect',
+                keep_session_alive: true
+            }));
+        }
+        
+        // Dispose the tab (closes WebSocket and terminal, but doesn't terminate backend session)
+        tab.dispose();
+        
+        // Remove tab from array
+        this.tabs.splice(tabIndex, 1);
+        
+        // If we closed the active tab, switch to another one
+        if (this.activeTab === tab) {
+            if (this.tabs.length > 0) {
+                // Switch to the tab to the right, or the first tab if we're at the end
+                const nextTabIndex = tabIndex < this.tabs.length ? tabIndex : 0;
+                this.switchTab(this.tabs[nextTabIndex]);
+            } else {
+                // No tabs left, clear the active tab
+                this.activeTab = null;
+                document.getElementById('terminal-container').innerHTML = '';
+                document.title = 'flashback-terminal';
+            }
+        }
+        
+        // Re-render tabs
+        this.renderTabs();
+        
+        // Save state after closing tab
+        this.saveTabState();
+        
+        FrontendLogger.info(`Tab closed successfully: uuid=${tab.uuid}`);
+    }
+
+    handleDragStart(e, tabIndex) {
+        FrontendLogger.debug(`Drag started: tab index ${tabIndex}`);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', tabIndex);
+        e.target.classList.add('dragging');
+        this.draggedTabIndex = tabIndex;
+    }
+
+    handleDragOver(e) {
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+        e.dataTransfer.dropEffect = 'move';
+        return false;
+    }
+
+    handleDragEnter(e) {
+        if (e.target.classList.contains('tab') && !e.target.classList.contains('dragging')) {
+            e.target.classList.add('drag-over');
+        }
+    }
+
+    handleDragLeave(e) {
+        if (e.target.classList.contains('tab')) {
+            e.target.classList.remove('drag-over');
+        }
+    }
+
+    handleDrop(e, dropTabIndex) {
+        if (e.stopPropagation) {
+            e.stopPropagation();
+        }
+        e.preventDefault();
+
+        // Remove visual feedback
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.remove('drag-over');
+        });
+
+        if (this.draggedTabIndex !== undefined && this.draggedTabIndex !== dropTabIndex) {
+            // Reorder the tabs array
+            const draggedTab = this.tabs[this.draggedTabIndex];
+            this.tabs.splice(this.draggedTabIndex, 1);
+            this.tabs.splice(dropTabIndex, 0, draggedTab);
+            
+            FrontendLogger.info(`Tab reordered: from index ${this.draggedTabIndex} to ${dropTabIndex}`);
+            
+            // Re-render tabs to update the order
+            this.renderTabs();
+            
+            // Save state after reordering tabs
+            this.saveTabState();
+        }
+
+        return false;
+    }
+
+    handleDragEnd(e) {
+        // Clean up visual feedback
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.remove('dragging');
+            tab.classList.remove('drag-over');
+        });
+        this.draggedTabIndex = undefined;
     }
 
     renderTabs() {
         const container = document.getElementById('tabs');
         container.innerHTML = '';
 
-        for (const tab of this.tabs) {
+        for (let i = 0; i < this.tabs.length; i++) {
+            const tab = this.tabs[i];
             const tabEl = document.createElement('div');
             tabEl.className = 'tab' + (tab === this.activeTab ? ' active' : '');
+            tabEl.draggable = true;
+            tabEl.dataset.tabIndex = i;
+            
             const displayName = tab.titleOverride || tab.name || tab.originalName;
-            tabEl.textContent = displayName;
-            tabEl.title = `Session: ${tab.originalName}\nCurrent: ${displayName}\nUUID: ${tab.uuid}`;
-            tabEl.addEventListener('click', () => this.switchTab(tab));
+            
+            // Create tab content container
+            const tabContent = document.createElement('span');
+            tabContent.className = 'tab-content';
+            tabContent.textContent = displayName;
+            tabContent.title = `Session: ${tab.originalName}\nCurrent: ${displayName}\nUUID: ${tab.uuid}`;
+            tabContent.addEventListener('click', () => this.switchTab(tab));
+            
+            // Create close button
+            const closeBtn = document.createElement('span');
+            closeBtn.className = 'tab-close';
+            closeBtn.textContent = '×';
+            closeBtn.title = 'Close terminal window (background session continues)';
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeTab(tab);
+            });
+            
+            // Add drag event listeners
+            tabEl.addEventListener('dragstart', (e) => this.handleDragStart(e, i));
+            tabEl.addEventListener('dragover', (e) => this.handleDragOver(e));
+            tabEl.addEventListener('drop', (e) => this.handleDrop(e, i));
+            tabEl.addEventListener('dragend', (e) => this.handleDragEnd(e));
+            tabEl.addEventListener('dragenter', (e) => this.handleDragEnter(e));
+            tabEl.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            
+            tabEl.appendChild(tabContent);
+            tabEl.appendChild(closeBtn);
             container.appendChild(tabEl);
         }
     }
@@ -606,6 +848,9 @@ class App {
             this.closeSessionsModal();
             this.hideLoading();
             
+            // Save state after attaching to session
+            this.saveTabState();
+            
         } catch (error) {
             console.error('Failed to attach to session:', error);
             this.showError(`Failed to attach to session: ${error.message}`);
@@ -642,6 +887,9 @@ class App {
 
             this.closeSessionsModal();
             this.hideLoading();
+            
+            // Save state after restoring session
+            this.saveTabState();
         } catch (error) {
             console.error('Failed to restore session:', error);
             this.showError(`Failed to restore session: ${error.message}`);

@@ -15,6 +15,11 @@ from flashback_terminal.database import Database
 from flashback_terminal.terminal import TerminalManager, TerminalSession
 from flashback_terminal.logger import logger
 
+
+class SessionTerminateException(Exception):
+    """Exception to signal that the session should be terminated."""
+    pass
+
 class TerminalWebSocketHandler:
     """Handles WebSocket connections for terminal sessions."""
 
@@ -193,6 +198,8 @@ class TerminalWebSocketHandler:
                         await self._handle_message(websocket, session, message)
                     except WebSocketDisconnect:
                         break
+                    except SessionTerminateException:
+                        break
                     except Exception as e:
                         logger.error(f"[WebSocket] WebSocket receive error: {e}")
                         break
@@ -255,6 +262,17 @@ class TerminalWebSocketHandler:
                 cols = msg.get("cols", 80)
                 logger.debug(f"[WebSocket] Resize request: rows={rows}, cols={cols}")
                 await session.resize(rows, cols)
+            elif msg_type == "disconnect":
+                # Handle graceful disconnect without terminating the backend session
+                keep_alive = msg.get("keep_session_alive", False)
+                logger.info(f"[WebSocket] Disconnect request: session_uuid={session_uuid}, keep_session_alive={keep_alive}")
+                if keep_alive:
+                    # Just close the WebSocket connection, keep the terminal session running
+                    await websocket.close()
+                    return
+                else:
+                    # Full session termination (existing behavior)
+                    raise SessionTerminateException("Session termination requested")
             elif msg_type == "command":
                 cmd = msg.get("cmd")
                 if cmd == "rename":

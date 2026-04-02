@@ -7,8 +7,6 @@ Local PTY mode has been removed in favor of multiplexers for:
 - Server-side terminal content extraction
 """
 import asyncio
-from re import A
-import trace
 import aiofiles
 import pty
 import fcntl
@@ -31,6 +29,19 @@ from flashback_terminal.config import get_config
 from flashback_terminal.logger import Logger, log_function, logger
 
 _singleton_session_manager = None
+
+def get_safe_content(content:str) -> str:
+    """
+    Filter out non-printable characters from content.
+    
+    Args:
+        content: The content to filter
+        
+    Returns:
+        Filtered content with only printable characters and whitespace
+    """
+    ret = ''.join(c for c in content if c.isprintable() or c in ' \n\r\t')
+    return ret
 
 class SessionManagerError(Exception):
     """Error raised by session manager."""
@@ -201,7 +212,10 @@ class BaseSession(ABC):
     async def _log_output(self, content: str) -> None:
         """Log output for history keeper."""
         self._sequence_num += 1
-        logger.debug(f"[{self.__class__.__name__}] Logging output (seq={self._sequence_num}, len={len(content)}): {content[:50]}...")
+        safe_content = content[:50]
+        # only allow printable characters
+        safe_content = get_safe_content(safe_content)
+        logger.debug(f"[{self.__class__.__name__}] Logging output (seq={self._sequence_num}, len={len(content)}): {safe_content}...")
         if self.on_output:
             await self.on_output(content)
 
@@ -481,6 +495,7 @@ set -g default-terminal "screen-256color"
         self._running = False
 
     async def write(self, data: str) -> None:
+        # TODO: since we write less than reading, we had better log those printable chars?
         """Send keys to tmux session."""
         if not self._running:
             logger.debug(f"[TmuxSession] Session not running, cannot write")
@@ -764,6 +779,10 @@ unsetenv STY
 
 # Optional: Set a restricted shell as default
 # shell /bin/rbash
+
+# https://www.gnu.org/software/screen/manual/html_node/Termcap-Examples.html
+# termcap xterm*  xn:hs@
+# termcap vt100  ""  l0=PF1:l1=PF2:l2=PF3:l3=PF4
 """
         self._socket_dir = Path(socket_dir).expanduser()
         self._session_name = f"flashback-{self.session_id}"
