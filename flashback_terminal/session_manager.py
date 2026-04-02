@@ -405,30 +405,38 @@ set -g default-terminal "screen-256color"
                     start_command,
                 ])
 
-                await self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"], check=False)
+                init_coro = []
+
+                init_coro.append(self._run_tmux(["set-option", '-g', "default-terminal", "xterm-256color"], check=False))
 
                 # set -g status off
                 # set -g mouse off
-                await self._run_tmux(["set-option", "-g", "status", "off"], check=False)
-                await self._run_tmux(["set-option", "-g", "mouse", "off"], check=False)
+                init_coro.append(self._run_tmux(["set-option", "-g", "status", "off"], check=False))
+                init_coro.append(self._run_tmux(["set-option", "-g", "mouse", "off"], check=False))
 
                 # set-environment -r TMUX
-                await self._run_tmux(["set-environment", "-r", "TMUX"], check=False)
+                init_coro.append(self._run_tmux(["set-environment", "-r", "TMUX"], check=False))
 
                 # unbind "Ctrl b" normal
-                await self._run_tmux(["unbind-key", "C-b"], check=False)
+                init_coro.append(self._run_tmux(["unbind-key", "C-b"], check=False))
 
                 # unbind-key -a
-                await self._run_tmux(["unbind-key", "-a"], check=False)
+                init_coro.append(self._run_tmux(["unbind-key", "-a"], check=False))
 
                 # Set environment variables
                 for key, value in profile_env.items():
-                    await self._run_tmux([
+                    init_coro.append(self._run_tmux([
                         "set-environment",
                         "-t", self._socket_name,
                         key, value,
-                    ], check=False)
-
+                    ], check=False))
+                
+                init_tasks = []
+                for coro in init_coro:
+                    init_tasks.append(asyncio.create_task(coro))
+                
+                await asyncio.gather(*init_tasks)
+            
             self._running = True
 
             # Attach to tmux session using a pty for direct I/O
@@ -455,18 +463,26 @@ set -g default-terminal "screen-256color"
             # execute init commands
             if not attach_existing:
                 logger.info(f"[TmuxSession] Executing init commands: {self.init_commands}")
+                keys_to_send = ""
                 for cmd in self.init_commands:
                     escaped = cmd.replace('"', '\\"')
-                    await self._run_tmux([
-                        "send-keys",
-                        "-t", self._target,
-                        escaped,
-                    ], check=False)
-                    await self._run_tmux([
-                        "send-keys",
-                        "-t", self._target,
-                        "Enter",
-                    ], check=False)
+                    keys_to_send += escaped + "\n"
+                    # await self._run_tmux([
+                    #     "send-keys",
+                    #     "-t", self._target,
+                    #     escaped,
+                    # ], check=False)
+                    # await self._run_tmux([
+                    #     "send-keys",
+                    #     "-t", self._target,
+                    #     "Enter",
+                    # ], check=False)
+
+                await self._run_tmux([
+                    "send-keys",
+                    "-t", self._target,
+                    keys_to_send,
+                ], check=False)
             return True
 
         except Exception as e:
@@ -776,6 +792,7 @@ vbell off
 
 # Remove STY variable from new windows
 unsetenv STY
+unsetenv SCREENDIR
 
 # Optional: Set a restricted shell as default
 # shell /bin/rbash
@@ -930,7 +947,7 @@ unsetenv STY
         shell = self.profile.get("shell") or os.environ.get("SHELL", "/bin/bash")
         args = self.profile.get("args", [])
         cwd = Path(self.profile.get("cwd", "~")).expanduser()
-        profile_env = self.profile.get("env", {})
+        profile_env:dict = self.profile.get("env", {})
 
         if self.profile.get("login_shell", True):
             shell_name = os.path.basename(shell)
@@ -996,16 +1013,45 @@ unsetenv STY
 
             logger.info(f"[ScreenSession] Screen session started: {self._session_name}")
 
+            init_coros = []
+
+            # Disable all command keys
+            init_coros.append(self._run_screen(['-X', "escape", ''], check=False))
+            init_coros.append(self._run_screen(['-X', "unbindall"], check=False))
+
+            # Remove status/info displays
+            init_coros.append(self._run_screen(['-X', "hardstatus", "off"], check=False))
+
+            init_coros.append(self._run_screen(['-X', "startup_message", "off"], check=False))
+            init_coros.append(self._run_screen(['-X', "vbell", "off"], check=False))
+
+            # Remove STY variable from new windows
+            init_coros.append(self._run_screen(['-X', "unsetenv", "STY"], check=False))
+            init_coros.append(self._run_screen(['-X', "unsetenv", "SCREENDIR"], check=False))
+
+            init_tasks = []
+
+            for coro in init_coros:
+                init_tasks.append(asyncio.create_task(coro))
+            
+            await asyncio.gather(*init_tasks)
+
             logger.info(f"[ScreenSession] Executing init commands: {self.init_commands}")
             if not attach_existing:
+                stuff_str = ""
                 for cmd in self.init_commands:
                     escaped = cmd.replace("'", "'\"'\"'")
-                    await self._run_screen([
-                        "-X", "stuff", escaped,
-                    ], check=False)
-                    await self._run_screen([
-                        "-X", "stuff", "\n",
-                    ], check=False)
+                    stuff_str += escaped + "\n"
+                    # await self._run_screen([
+                    #     "-X", "stuff", escaped,
+                    # ], check=False)
+                    # await self._run_screen([
+                    #     "-X", "stuff", "\n",
+                    # ], check=False)
+
+                await self._run_screen([
+                    "-X", "stuff", stuff_str,
+                ], check=False)
             return True
 
         except Exception as e:
