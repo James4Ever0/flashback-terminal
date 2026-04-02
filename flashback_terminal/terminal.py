@@ -156,6 +156,58 @@ class TerminalSession:
             await self._session.stop()
 
 
+
+def check_socket_present(session_uuid:str, session_type:str) -> bool:
+    config = get_config()
+    socket_accessible=False
+
+    if session_type == "tmux":
+        socket_dir = config.get("session_manager.tmux.socket_dir", "~/.flashback-terminal/tmux")
+
+        socket_dir = os.path.expanduser(socket_dir)
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Terminal] Socket directory {socket_dir} does not exist, cannot verify presense of tmux session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files: list[str] = os.listdir(socket_dir)
+
+            # filter out those config files, also socket file is of zero file length.
+            files = [it for it in files if not it.endswith(".conf")]
+
+            if "flashback-" + session_uuid in files:
+                socket_accessible = True
+            else:
+                logger.warning(f"[Terminal] Tmux socket file for session {session_uuid} not found in {socket_dir}")
+    elif session_type == "screen":
+        socket_dir = config.get("session_manager.screen.socket_dir", "~/.flashback-terminal/screen")
+
+        socket_dir = os.path.expanduser(socket_dir)
+        socket_accessible=False
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Terminal] Socket directory {socket_dir} does not exist, cannot verify presense of screen session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files = os.listdir(socket_dir)
+
+            files = [it for it in files if not it.endswith(".rc")]
+            files = [it for it in files if it.count(".") == 1]
+
+            socket_lookups = [it.split(".", 1)[1] for it in files] # remove pid?
+
+            if "flashback-" + session_uuid in socket_lookups:
+                socket_accessible = True
+            else:
+                logger.warning(f"[Terminal] Screen socket file for session {session_uuid} not found in {socket_dir}")
+
+    else:
+        raise RuntimeError("[Terminal] Unsupported session type lookup for socket presence: %s" % session_type)
+                
+    return socket_accessible
+
+
+
 class TerminalManager:
     """Manages multiple terminal sessions."""
 
@@ -165,6 +217,46 @@ class TerminalManager:
         self.sessions: Dict[str, TerminalSession] = {}
         self.config = get_config()
         logger.debug("TerminalManager initialized")
+
+    @log_function(Logger.DEBUG)
+    async def revive_session(self, session_uuid:str) -> Optional[TerminalSession]:
+        # assume socket is not present, just recreate it from db data.
+        logger.info(f"Attempting to revive session: {session_uuid}")
+        
+        # Get session info from database
+        db_session = await self.db.get_session_by_uuid(session_uuid)
+        if not db_session:
+            logger.warning(f"[TerminalManager] Session {session_uuid} not found in database")
+            return None
+
+        term_session = self.get_session(session_uuid)
+        if term_session:
+            logger.info(f"[TerminalManager] Session {session_uuid} already exists")
+            return term_session
+        
+        # assert socket not to present.
+        socket_present = check_socket_present(session_uuid, db_session.session_type)
+
+        if socket_present:
+            logger.warning("Attempting to revive session with socket present: %s" % session_uuid)
+            return await self.restore_session(session_uuid) 
+
+        profile = self.config.get_profile(db_session.profile_name) or {"name": "default"}
+
+        session = TerminalSession(
+            session_id=db_session.id,
+            uuid=db_session.uuid,
+            db=self.db,
+            profile=profile,
+        )
+
+        if await session.start():
+            self.sessions[session_uuid] = session
+            return session
+        else:
+            logger.error(f"Failed to revive session: {db_session.uuid}")
+            await self.db.delete_session(db_session.id)
+            return None
     
     @log_function(Logger.DEBUG)
     async def restore_session(self, session_uuid: str) -> Optional[TerminalSession]:

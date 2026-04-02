@@ -347,6 +347,11 @@ async def list_sessions(
 
     logger.info(f"Listed {len(sessions)} sessions (status={status}, limit={limit})")
 
+    sessions_for_socket_present_check = [dict(session_uuid=s.uuid, session_type=s.session_type) for s in sessions]
+
+    loop = asyncio.get_event_loop()
+    socket_present_results = await loop.run_in_executor(None, batch_check_socket_present, sessions_for_socket_present_check)
+
     return {
         "sessions": [
             {
@@ -359,7 +364,8 @@ async def list_sessions(
                 "last_cwd": s.last_cwd,
                 "is_running": s.uuid in running_sessions and terminal_manager.sessions[s.uuid].is_running_buffered and await terminal_manager.sessions[s.uuid]._session._is_running(),
                 "can_attach": s.status in ("active", "running") and s.uuid not in running_sessions,
-                "socket_present": True, # to be implemented, only if you know this is a tmux or screen session.
+                "session_type": s.session_type, # either tmux or screen
+                "socket_present": socket_present_results[s.uuid], # to be implemented, only if you know this is a tmux or screen session.
             }
             for s in sessions
         ]
@@ -372,7 +378,7 @@ async def create_session(profile: str = "default", name: Optional[str] = None):
     """Create a new terminal session."""
     logger.info(f"Creating new session: profile={profile}, name={name}")
 
-    session = await terminal_manager.create_session(profile_name=profile, name=name)
+    session: Optional[TerminalSession] = await terminal_manager.create_session(profile_name=profile, name=name)
     session_name = name or f"Terminal {session.session_id}"
     # update db?
 
@@ -390,6 +396,118 @@ async def create_session(profile: str = "default", name: Optional[str] = None):
         "name": session_name,
     }
 
+def batch_check_socket_present(sessions:list[dict]) -> dict[str, bool]:
+    config = get_config()
+
+    ret = {s['session_uuid']: False for s in sessions}
+
+    tmux_sessions = []
+    screen_sessions = []
+    unknown_sessions = []
+
+    for s in sessions:
+        if s['session_type'] == 'tmux':
+            tmux_sessions.append(s)
+        elif s['session_type'] == 'screen':
+            screen_sessions.append(s)
+        else:
+            unknown_sessions.append(s)
+            logger.warning("[Server] Unknown session type: %s" % s['session_type'])
+
+    if tmux_sessions:
+        socket_dir = config.get("session_manager.tmux.socket_dir", "~/.flashback-terminal/tmux")
+
+        socket_dir = os.path.expanduser(socket_dir)
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Server] Socket directory {socket_dir} does not exist, cannot verify presense of tmux session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files: list[str] = os.listdir(socket_dir)
+
+            # filter out those config files, also socket file is of zero file length.
+            files = [it for it in files if not it.endswith(".conf")]
+
+            for s in tmux_sessions:
+                session_uuid = s['session_uuid']
+                if "flashback-" + session_uuid in files:
+                    ret[session_uuid] = True
+                else:
+                    logger.warning(f"[Server] Tmux socket file for session {session_uuid} not found in {socket_dir}")
+    
+    if screen_sessions:
+        socket_dir = config.get("session_manager.screen.socket_dir", "~/.flashback-terminal/screen")
+
+        socket_dir = os.path.expanduser(socket_dir)
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Server] Socket directory {socket_dir} does not exist, cannot verify presense of screen session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files = os.listdir(socket_dir)
+
+            files = [it for it in files if not it.endswith(".rc")]
+            files = [it for it in files if it.count(".") == 1]
+
+            socket_lookups = [it.split(".", 1)[1] for it in files] # remove pid?
+
+            for s in screen_sessions:
+                session_uuid = s['session_uuid']
+                if "flashback-" + session_uuid in socket_lookups:
+                    ret[session_uuid] = True
+                else:
+                    logger.warning(f"[Server] Screen socket file for session {session_uuid} not found in {socket_dir}")
+    return ret
+
+
+def check_socket_present(session_uuid:str, session_type:str) -> bool:
+    config = get_config()
+    socket_accessible=False
+
+    if session_type == "tmux":
+        socket_dir = config.get("session_manager.tmux.socket_dir", "~/.flashback-terminal/tmux")
+
+        socket_dir = os.path.expanduser(socket_dir)
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Server] Socket directory {socket_dir} does not exist, cannot verify presense of tmux session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files: list[str] = os.listdir(socket_dir)
+
+            # filter out those config files, also socket file is of zero file length.
+            files = [it for it in files if not it.endswith(".conf")]
+
+            if "flashback-" + session_uuid in files:
+                socket_accessible = True
+            else:
+                logger.warning(f"[Server] Tmux socket file for session {session_uuid} not found in {socket_dir}")
+    elif session_type == "screen":
+        socket_dir = config.get("session_manager.screen.socket_dir", "~/.flashback-terminal/screen")
+
+        socket_dir = os.path.expanduser(socket_dir)
+        socket_accessible=False
+
+        if not os.path.isdir(socket_dir):
+            logger.warning(f"[Server] Socket directory {socket_dir} does not exist, cannot verify presense of screen session")
+        else:
+            # check if in this dir there is a file with session_uuid in it.
+            files = os.listdir(socket_dir)
+
+            files = [it for it in files if not it.endswith(".rc")]
+            files = [it for it in files if it.count(".") == 1]
+
+            socket_lookups = [it.split(".", 1)[1] for it in files] # remove pid?
+
+            if "flashback-" + session_uuid in socket_lookups:
+                socket_accessible = True
+            else:
+                logger.warning(f"[Server] Screen socket file for session {session_uuid} not found in {socket_dir}")
+
+    else:
+        raise RuntimeError("[Server] Unsupported session type lookup for socket presence: %s" % session_type)
+                
+    return socket_accessible
 
 @app.get("/api/sessions/{session_uuid}")
 async def get_session(session_uuid: str):
@@ -397,7 +515,9 @@ async def get_session(session_uuid: str):
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-
+    
+    loop = asyncio.get_event_loop()
+    socket_present = await loop.run_in_executor(None, check_socket_present, session.uuid, session.session_type)
     return {
         "id": session.id,
         "uuid": session.uuid,
@@ -406,6 +526,8 @@ async def get_session(session_uuid: str):
         "created_at": session.created_at.isoformat(),
         "status": session.status,
         "last_cwd": session.last_cwd,
+        "session_type": session.session_type, # tmux or screen
+        "socket_present": socket_present, # check if socket of this session is present?
     }
 
 
@@ -431,6 +553,51 @@ async def delete_session(session_uuid: str):
     await db.delete_session(session.id)
     return {"success": True}
 
+
+@app.post("/api/sessions/{session_uuid}/revive")
+async def revive_session(session_uuid: str):
+    """Restore an archived session."""
+    logger.debug("[Server] Reviving session: %s" % session_uuid)
+
+    db_session = await db.get_session_by_uuid(session_uuid)
+    session_name = db_session.name if db_session else "Unknown"
+
+    # stop all running session matching this uuid
+    if session_uuid in terminal_manager.sessions:
+        try:
+            await terminal_manager.sessions[session_uuid].stop()
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error stopping session: %s" % tb)
+        try:
+            del terminal_manager.sessions[session_uuid]
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error deleting session: %s" % tb)
+    # stop all websocket connections to this uuid
+    if session_uuid in ws_handler.active_connections:
+        try:
+            await ws_handler.active_connections[session_uuid].close()
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error closing websocket connection: %s" % tb)
+        try:
+            del ws_handler.active_connections[session_uuid]
+        except:
+            tb = traceback.format_exc()
+            logger.error("[Server] Error deleting websocket connection: %s" % tb)
+    
+    sess = await terminal_manager.revive_session(session_uuid)
+    if sess:
+        return {
+            "uuid": session_uuid,
+            "name": session_name,
+            "status": "revived", # when restored, history may not preserve? might need to recreate the underlying session again?
+            "message": "Successfully revived session"
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to revive terminal session")
+        
 
 @app.post("/api/sessions/{session_uuid}/restore")
 async def restore_session(session_uuid: str):

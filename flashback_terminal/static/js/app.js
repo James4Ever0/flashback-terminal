@@ -334,6 +334,8 @@ class App {
         this.tabs = [];
         this.activeTab = null;
         this.STORAGE_KEY = 'flashback-terminal-tabs';
+        this.previewTimeout = null;
+        this.currentPreviewTab = null;
     }
 
     saveTabState() {
@@ -567,6 +569,22 @@ class App {
     }
 
     handleDragStart(e, tabIndex) {
+        // focus on the dragged tab first, then handle all the drag events later.
+        const draggedTab = this.tabs[tabIndex];
+        if (draggedTab) {
+            // Focus the terminal without re-rendering tabs to avoid disrupting drag operation
+            if (this.activeTab) {
+                this.activeTab.terminal.element.style.display = 'none';
+            }
+            this.activeTab = draggedTab;
+            draggedTab.terminal.element.style.display = 'block';
+            draggedTab.focus();
+            
+            // Update window title
+            const displayName = draggedTab.titleOverride || draggedTab.name || draggedTab.originalName;
+            document.title = `${displayName} - flashback-terminal`;
+        }
+        
         FrontendLogger.debug(`Drag started: tab index ${tabIndex}`);
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/html', tabIndex);
@@ -632,6 +650,74 @@ class App {
         this.draggedTabIndex = undefined;
     }
 
+    showTabPreview(tab, tabElement) {
+        // Clear any existing timeout
+        if (this.previewTimeout) {
+            clearTimeout(this.previewTimeout);
+        }
+
+        // Set a small delay before showing preview
+        this.previewTimeout = setTimeout(() => {
+            // Don't show preview if this is the active tab
+            if (tab === this.activeTab) {
+                return;
+            }
+
+            this.currentPreviewTab = tab;
+            
+            // Create or get preview container
+            let previewContainer = document.getElementById('tab-preview');
+            if (!previewContainer) {
+                previewContainer = document.createElement('div');
+                previewContainer.id = 'tab-preview';
+                previewContainer.className = 'tab-preview';
+                document.body.appendChild(previewContainer);
+            }
+
+            // Clone the terminal content for preview
+            const terminalElement = tab.terminal.element;
+            const previewContent = terminalElement.cloneNode(true);
+            previewContent.style.display = 'block';
+            previewContent.style.position = 'static';
+            previewContent.style.height = '400px';
+            previewContent.style.overflow = 'hidden';
+            
+            // Clear preview container and add content
+            previewContainer.innerHTML = '';
+            previewContainer.appendChild(previewContent);
+            
+            // Position preview relative to the terminal container
+            const terminalContainer = document.getElementById('terminal-container');
+            const containerRect = terminalContainer.getBoundingClientRect();
+            
+            previewContainer.style.position = 'fixed';
+            previewContainer.style.top = `${containerRect.top + 20}px`;
+            previewContainer.style.left = `${containerRect.left + 20}px`;
+            previewContainer.style.width = `${containerRect.width - 40}px`;
+            previewContainer.style.zIndex = '1000';
+            previewContainer.style.display = 'block';
+            
+            FrontendLogger.debug(`Showing preview for tab: ${tab.name}`);
+        }, 500); // 500ms delay
+    }
+
+    hideTabPreview() {
+        // Clear any pending preview
+        if (this.previewTimeout) {
+            clearTimeout(this.previewTimeout);
+            this.previewTimeout = null;
+        }
+
+        // Hide existing preview
+        const previewContainer = document.getElementById('tab-preview');
+        if (previewContainer) {
+            previewContainer.style.display = 'none';
+        }
+        
+        this.currentPreviewTab = null;
+        FrontendLogger.debug('Hiding tab preview');
+    }
+
     renderTabs() {
         const container = document.getElementById('tabs');
         container.innerHTML = '';
@@ -669,6 +755,10 @@ class App {
             tabEl.addEventListener('dragend', (e) => this.handleDragEnd(e));
             tabEl.addEventListener('dragenter', (e) => this.handleDragEnter(e));
             tabEl.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            
+            // Add hover preview event listeners
+            tabEl.addEventListener('mouseenter', (e) => this.showTabPreview(tab, tabEl));
+            tabEl.addEventListener('mouseleave', () => this.hideTabPreview());
             
             tabEl.appendChild(tabContent);
             tabEl.appendChild(closeBtn);
@@ -769,14 +859,14 @@ class App {
 
                 if (sess){
                     // TODO: if it is attachable, socket present, then we shall attach to it. otherwise we clone it. add attribute: socket_present
-                    if (sess.is_running){
+                    if (sess.socket_present){
                     buttonClass = 'btn-attach';
                     buttonText = 'Attach';
                     onClick = `app.attachToSession('${r.session_uuid}')`;
                 } else {
                     buttonClass = 'btn-restore';
-                    buttonText = 'Clone';
-                    onClick = `app.restoreSession('${r.session_uuid}')`;
+                    buttonText = 'Revive';
+                    onClick = `app.reviveSession('${r.session_uuid}')`;
                 }}else{
                     buttonClass = 'jump-btn disabled'
                     buttonText = "Terminal not available"
@@ -865,7 +955,7 @@ class App {
                     actionButtons = `
                     <button class="btn-attach" onclick="app.switchToSession('${s.uuid}')">Attach To (maybe already running elsewhere)</button>
                 `;}
-            } else if (s.can_attach) {
+            } else if (s.socket_present) {
                 // Session can be attached/restored
                 actionButtons = `
                     <button class="btn-attach" onclick="app.attachToSession('${s.uuid}')">Attach</button>
@@ -875,7 +965,7 @@ class App {
                 // BUT we might want to restore?
                 // i mean that restore thing shall be "clone"
 
-                actionButtons = `<button class="btn-restore" onclick="app.restoreSession('${s.uuid}')">Clone</button>`;
+                actionButtons = `<button class="btn-restore" onclick="app.reviveSession('${s.uuid}')">Revive</button>`;
 
                 // actionButtons = `
                 //     <span class="status-unavailable">Unavailable</span>
@@ -955,6 +1045,45 @@ class App {
         } catch (error) {
             console.error('Failed to attach to session:', error);
             this.showError(`Failed to attach to session: ${error.message}`);
+            this.hideLoading();
+        }
+    }
+
+    async reviveSession(sessionUuid) {
+        const exitLog = FrontendLogger.logFunction('App.reviveSession');
+
+        try {
+            this.showLoading(`Reviving session ${sessionUuid}...`);
+            
+            const response = await fetch(`/api/sessions/${sessionUuid}/revive`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Failed to revive session');
+            }
+            
+            const result = await response.json();
+            console.log('Revived and attached to session:', result);
+            
+            // Create a new tab for the attached session
+            const tab = new TerminalTab(result.uuid, result.name);
+            tab.app=this;
+            this.tabs.push(tab);
+            await tab.connect();
+
+            this.switchTab(tab);
+            this.renderTabs();
+
+            this.closeSessionsModal();
+            this.hideLoading();
+            
+            // Save state after restoring session
+            this.saveTabState();
+        } catch (error) {
+            console.error('Failed to revive session:', error);
+            this.showError(`Failed to revive session: ${error.message}`);
             this.hideLoading();
         }
     }

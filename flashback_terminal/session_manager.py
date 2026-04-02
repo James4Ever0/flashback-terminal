@@ -206,7 +206,7 @@ class BaseSession(ABC):
             ret = is_running
             if is_running:
                 self._is_running_last_cache = dict(timestamp = time.time(), is_running = is_running)
-        logger.trace('[BaseSession] is_running cache_used=%s, cache_found=%s, called_time=%s, result=%s, cache_reset=%s' % (cached,cache_found, time.time(), ret, cache_reset))
+        logger.trace('[BaseSession] is_running cache_used=%s, cache_found=%s, called_time=%s, result=%s, cache_reset=%s' % (cached, cache_found, time.time(), ret, cache_reset))
         return ret
 
     async def _log_output(self, content: str) -> None:

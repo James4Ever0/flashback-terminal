@@ -458,3 +458,29 @@ button:hover {
         padding: 16px;
     }
 }
+
+/* Tab preview styles */
+.tab-preview {
+    position: fixed;
+    background: #1a1a1a;
+    border: 3px solid #4a9;
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    max-height: 400px;
+    overflow: hidden;
+    display: none;
+}
+
+.tab-preview .xterm {
+    height: 400px !important;
+    font-size: 14px !important;
+}
+
+.tab-preview .xterm-viewport {
+    overflow-y: auto !important;
+}
+
+.tab-preview .xterm-screen {
+    padding: 8px;
+}
