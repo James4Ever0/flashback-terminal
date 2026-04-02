@@ -186,7 +186,7 @@ class TerminalTab {
         switch (msg.type) {
             case 'output':
                 this.terminal.write(msg.data);
-                console.dir(this.terminal);
+                // console.dir(this.terminal);
                 break;
             case 'history_replay':
                 for (const chunk of msg.chunks) {
