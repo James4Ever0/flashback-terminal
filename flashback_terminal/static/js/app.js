@@ -733,11 +733,13 @@ class App {
             const displayName = tab.titleOverride || tab.name || tab.originalName;
             
             // Create tab content container
+            // too small for click event?
             const tabContent = document.createElement('span');
             tabContent.className = 'tab-content';
             tabContent.textContent = displayName;
             tabContent.title = `Session: ${tab.originalName}\nCurrent: ${displayName}\nUUID: ${tab.uuid}`;
-            tabContent.addEventListener('click', () => this.switchTab(tab));
+
+            // tabContent.addEventListener('click', () => this.switchTab(tab));
             
             // Create close button
             const closeBtn = document.createElement('span');
@@ -748,7 +750,9 @@ class App {
                 e.stopPropagation();
                 this.closeTab(tab);
             });
-            
+
+            tabEl.addEventListener('click', () => this.switchTab(tab));
+
             // Add drag event listeners
             tabEl.addEventListener('dragstart', (e) => this.handleDragStart(e, i));
             tabEl.addEventListener('dragover', (e) => this.handleDragOver(e));
