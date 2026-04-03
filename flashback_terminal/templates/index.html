@@ -31,16 +31,20 @@
             <span class="close-btn">&times;</span>
             <h2>Search Terminal History</h2>
             <input type="text" id="search-input" placeholder="Search...">
-            <select id="search-mode">
-                <option value="text">Text (BM25)</option>
-                <option value="semantic">Semantic</option>
-                <option value="hybrid">Hybrid</option>
-            </select>
-            <select id="search-scope">
-                <option value="current">Current Tab</option>
-                <option value="all">All Tabs</option>
-            </select>
-            <button id="btn-do-search">Search</button>
+            <div class="search-controls">
+                <div class="search-dropdowns">
+                    <select id="search-mode">
+                        <option value="text">Text (BM25)</option>
+                        <option value="semantic">Semantic</option>
+                        <option value="hybrid">Hybrid</option>
+                    </select>
+                    <select id="search-scope">
+                        <option value="current">Current Tab</option>
+                        <option value="all">All Tabs</option>
+                    </select>
+                </div>
+                <button id="btn-do-search">Search</button>
+            </div>
             <div id="search-results"></div>
         </div>
     </div>

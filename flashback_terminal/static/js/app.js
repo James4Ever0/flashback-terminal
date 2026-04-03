@@ -910,6 +910,12 @@ class App {
         if (tab) {
             this.switchTab(tab);
             // Close search modal
+            this.closeSearchModal();
+        }
+    }
+
+    closeSearchModal() {
+        if (!document.getElementById('search-modal').classList.contains('hidden')){
             document.getElementById('search-modal').classList.add('hidden');
         }
     }
@@ -1007,6 +1013,7 @@ class App {
         if (existingTab) {
             this.switchTab(existingTab);
             this.closeSessionsModal();
+            this.closeSearchModal();
             return;
         }
 
@@ -1042,6 +1049,7 @@ class App {
             this.renderTabs();
 
             this.closeSessionsModal();
+            this.closeSearchModal();
             this.hideLoading();
             
             // Save state after attaching to session
@@ -1082,6 +1090,7 @@ class App {
             this.renderTabs();
 
             this.closeSessionsModal();
+            this.closeSearchModal();
             this.hideLoading();
             
             // Save state after restoring session
@@ -1121,6 +1130,7 @@ class App {
             this.renderTabs();
 
             this.closeSessionsModal();
+            this.closeSearchModal();
             this.hideLoading();
             
             // Save state after restoring session
@@ -1133,7 +1143,10 @@ class App {
     }
 
     closeSessionsModal() {
-        document.getElementById('sessions-modal').classList.add('hidden');
+        if (!document.getElementById('sessions-modal').classList.contains('hidden'))
+        {
+            document.getElementById('sessions-modal').classList.add('hidden');
+        }
     }
 
     showLoading(message) {
