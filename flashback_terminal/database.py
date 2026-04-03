@@ -112,6 +112,15 @@ class Database:
             """)
 
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS terminal_input (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    content TEXT NOT NULL
+                )
+            """)
+
+            await conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS terminal_output_fts USING fts5(
                     content,
                     content_rowid=rowid,
@@ -220,6 +229,8 @@ class Database:
             )
             await conn.commit()
             session_id = cursor.lastrowid
+            if not session_id:
+                raise RuntimeError("Failed to insert session")
             logger.info(f"Session created: id={session_id}, uuid={uuid}, type={session_type}")
             return session_id
 
@@ -293,7 +304,25 @@ class Database:
                 )).fetchall()
             return [self._row_to_session(row) for row in rows]
 
+    # since it creates unnecessary overhead, we better not to log terminal output. let's just simply skip it. we will log input instead, and log input in a reasonable period. let's say, 10 seconds idle?
     async def insert_terminal_output(
+        self, session_id: int, sequence_num: int, content: str, content_type: str = "output"
+    ) -> int:
+        return -1
+    
+    # TODO: make sure we only write visible chars, newline, tab, space. exclude all else.
+    async def insert_terminal_input(self, session_id:int, content: str) -> int:
+        async with self._connect() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO terminal_input (session_id, content) VALUES (?, ?, ?, ?)",
+                (session_id, content),
+            )
+            await conn.commit()
+            if not cursor.lastrowid:
+                raise RuntimeError("Failed to insert terminal input")
+            return cursor.lastrowid
+
+    async def _insert_terminal_output(
         self, session_id: int, sequence_num: int, content: str, content_type: str = "output"
     ) -> int:
         async with self._connect() as conn:
@@ -302,6 +331,8 @@ class Database:
                 (session_id, sequence_num, content, content_type),
             )
             await conn.commit()
+            if not cursor.lastrowid:
+                raise RuntimeError("Failed to insert terminal output")
             return cursor.lastrowid
 
     async def get_terminal_output(
@@ -371,6 +402,8 @@ class Database:
                 (session_id, file_path, file_size, width, height),
             )
             await conn.commit()
+            if not cursor.lastrowid:
+                raise RuntimeError("Failed to insert screenshot")
             return cursor.lastrowid
 
     async def get_screenshots(self, session_id: int, limit: int = 100) -> List[Screenshot]:
@@ -454,7 +487,13 @@ class Database:
                  capture_type, json.dumps(metadata or {})),
             )
             await conn.commit()
+            if not cursor.lastrowid:
+                raise RuntimeError("Failed to insert terminal capture")
             return cursor.lastrowid
+
+    async def get_last_terminal_capture(self, session_id:int) -> Optional[TerminalCapture]:
+        ret = await self.get_terminal_captures(session_id, limit=1)
+        return ret[0] if ret else None
 
     async def get_terminal_captures(
         self, session_id: int, limit: int = 100, offset: int = 0

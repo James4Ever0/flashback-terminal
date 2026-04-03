@@ -10,6 +10,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import hashlib
 
 from flashback_terminal.config import get_config
 from flashback_terminal.database import Database
@@ -119,11 +120,58 @@ class CaptureWorker:
     async def capture_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Capture a single session."""
         try:
+            sess = self.session_manager.get_session(session_id)
+            if not sess:
+                logger.warning(f"[CaptureWorker] Session {session_id} not found in session manager")
+                return None
+
+            # Get database session record
+            db_session = await self.db.get_session_by_uuid(session_id)
+
+            if not db_session:
+                logger.warning(f"[CaptureWorker] Session {session_id} not found in database")
+                return None
+
             # Capture from session manager
             capture = await self.session_manager.capture_session(
                 session_id, full_scrollback=self.capture_full_scrollback
             )
-            sess = self.session_manager.get_session(session_id)
+
+            if not capture:
+                logger.warning(f"[CaptureWorker] No capture data for session {session_id}")
+                return None
+
+            last_terminal_capture = await self.db.get_last_terminal_capture(db_session.id)
+
+            if last_terminal_capture:
+                if capture.ansi:
+                    capture_hash_source = capture.ansi
+                else:
+                    capture_hash_source = capture.text
+                
+                if not capture_hash_source:
+                    logger.warning(f"[CaptureWorker] No capture data for session {session_id}")
+                    return None
+                
+                capture_hash = hashlib.md5(capture_hash_source.encode()).hexdigest()
+
+                if not capture_hash_source:
+                    logger.debug(f"[CaptureWorker] No capture data for session {session_id}")
+                    return None
+
+                if last_terminal_capture.ansi_content:
+                    last_capture_hash_source = last_terminal_capture.ansi_content
+                elif last_terminal_capture.text_content:
+                    last_capture_hash_source = last_terminal_capture.text_content
+                else:
+                    last_capture_hash_source = ""
+                
+                last_capture_hash = hashlib.md5(last_capture_hash_source.encode()).hexdigest()
+
+                if capture_hash == last_capture_hash:
+                    logger.debug(f"[CaptureWorker] Capture hash matches last capture for session {session_id}")
+                    return None
+            
             session_terminal_size = sess._terminal_size
             if session_terminal_size:
                 cols=session_terminal_size.get('cols', 0)
@@ -131,16 +179,6 @@ class CaptureWorker:
             else:
                 cols=-1
                 rows=-1
-
-            if not capture:
-                logger.debug(f"[CaptureWorker] No capture data for session {session_id}")
-                return None
-
-            # Get database session record
-            db_session = await self.db.get_session_by_uuid(session_id)
-            if not db_session:
-                logger.warning(f"[CaptureWorker] Session {session_id} not found in database")
-                return None
 
             # Determine capture type
             config_mode = self.config.session_manager_mode
