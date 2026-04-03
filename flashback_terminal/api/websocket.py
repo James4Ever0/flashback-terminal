@@ -134,7 +134,8 @@ class TerminalWebSocketHandler:
         self.active_connections[session_uuid] = websocket
 
         def on_output(data: str) -> None:
-            logger.info(f"[WebSocket] Output event: {data}")
+            safe_data = [it for it in data if it.isprintable() or it in '\r\t\n ']
+            logger.info(f"[WebSocket] Output event:\n{''.join(safe_data)}")
             asyncio.create_task(self._send_output(session_uuid, data))
 
         def on_clear() -> None:

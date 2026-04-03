@@ -673,16 +673,21 @@ async def search(request: SearchRequest):
         logger.debug(f"[Server] Search limited to session_ids: {target_session_ids}")
 
     logger.debug("[Server] Executing search...")
-    results = await search_engine.search(
-        query=request.query,
-        mode=request.mode,
-        scope=request.scope,
-        session_ids=target_session_ids,
-        limit=request.limit,
-        order_by=request.order_by,
-        time_range=request.time_range,
-        filter_inactive=request.filter_inactive,
-    )
+    try:
+        results = await search_engine.search(
+            query=request.query,
+            mode=request.mode,
+            scope=request.scope,
+            session_ids=target_session_ids,
+            limit=request.limit,
+            order_by=request.order_by,
+            time_range=request.time_range,
+            filter_inactive=request.filter_inactive,
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"[Server] Search failed: \n{tb}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
     for item in results:
         # render search engine enrichment obsolete?

@@ -63,8 +63,9 @@ class BM25Search:
         documents = []
         for row in rows:
             doc_id = row["id"]
+            session_id = row['session_id']
             content = row["text_content"]
-            documents.append((doc_id, content))
+            documents.append((doc_id, session_id, content))
         try:
             await self.bm25_index.add_documents(documents)
         except Exception as e:
@@ -80,7 +81,7 @@ class BM25Search:
             return []
         
         # Get raw results from BM25 index
-        raw_results = await self.bm25_index.query(query, top_k * 2)  # Get more to filter
+        raw_results = await self.bm25_index.query(query, top_n=top_k * 2, filter_ids=session_ids)  # Get more to filter
         
         # Convert doc_id strings to integers and filter by session if needed
         results = []

@@ -783,10 +783,23 @@ class App {
         FrontendLogger.info(`Search initiated: query="${query}", mode=${mode}, scope=${scope}`);
         const exitLog = FrontendLogger.logFunction('App.doSearch', { query, mode, scope });
 
+        if (scope === 'current'){
+            if (this.activeTab){
+                FrontendLogger.info("Searching in current tab");
+            }else{
+                FrontendLogger.warn("No active tab to search in");
+                // alert user
+                alert("No active tab to search in");
+                return;
+            }
+        }
+        
         // Show searching feedback
         this.renderSearchStatus('Searching...');
 
         const sessionIds = scope === 'current' && this.activeTab ? [this.activeTab.uuid] : [];
+
+        console.log("[doSearch] sessionIds:", sessionIds);
 
         try {
             const response = await fetch('/api/search', {

@@ -16,6 +16,7 @@ try:
     from whoosh import fields, index, writing
     from whoosh.analysis import StandardAnalyzer
     from whoosh.qparser import QueryParser
+    from whoosh.query import Term
     WHOOSH_AVAILABLE = True
 except ImportError:
     WHOOSH_AVAILABLE = False
@@ -76,6 +77,7 @@ class WhooshIndexAsync:
         # Schema definition
         self.schema = fields.Schema(
             doc_id=fields.ID(stored=True, unique=True),
+            session_id=fields.ID(stored=True),
             content=fields.TEXT(stored=True, analyzer=get_analyzer(use_chinese))
         )
 
@@ -132,7 +134,7 @@ class WhooshIndexAsync:
         doc_id = str(doc_id)
         return doc_id in self._doc_ids
 
-    async def add_document(self, doc_id: Union[str, int], text: str) -> None:
+    async def add_document(self, doc_id: Union[str, int], session_id:int, text: str) -> None:
         """
         Add a single document to the index.
         
@@ -140,18 +142,20 @@ class WhooshIndexAsync:
         ----------
         doc_id : str or int
             Unique identifier for the document.
+        session_id: int
+            Terminal session id.
         text : str
             Document content.
         """
-        await self.add_documents([(doc_id, text)])
+        await self.add_documents([(doc_id, session_id, text)])
 
-    async def add_documents(self, documents: List[Tuple[Union[str, int], str]]) -> None:
+    async def add_documents(self, documents: List[Tuple[Union[str, int], int, str]]) -> None:
         """
         Add multiple documents to the index in a batch operation.
         
         Parameters
         ----------
-        documents : list of (doc_id, text)
+        documents : list of (doc_id, session_id, text)
             List of document tuples to add.
         """
         if not documents:
@@ -164,15 +168,16 @@ class WhooshIndexAsync:
                 added_any = False
                 newly_added_doc_ids = set()
                 
-                for doc_id, text in documents:
+                for doc_id, session_id, text in documents:
                     doc_id_str = str(doc_id)
+                    session_id_str = str(session_id)
                     
                     # Skip if document already exists
                     if doc_id_str in self._doc_ids:
                         continue
                     
                     try:
-                        writer.add_document(doc_id=doc_id_str, content=text)
+                        writer.add_document(doc_id=doc_id_str, session_id=session_id_str, content=text)
                         self._doc_ids.add(doc_id_str)
                         newly_added_doc_ids.add(doc_id_str)
                         added_any = True
@@ -194,7 +199,7 @@ class WhooshIndexAsync:
                 await self._save_doc_ids(new_doc_ids)
                 logger.debug(f"[WhooshIndexAsync] Added {len(new_doc_ids)} new documents to index")
     
-    async def query(self, query_text:str, top_n:int = 10) -> List[Tuple[str, float]]:
+    async def query(self, query_text:str, top_n:int = 10, filter_ids: list[int]=[]) -> List[Tuple[str, float]]:
         """
         Search the index with a query and return the top matching documents.
         
@@ -204,6 +209,8 @@ class WhooshIndexAsync:
             The query string.
         top_n : int, optional
             Number of top results to return (default 10).
+        filter_ids: list[int], optional
+            Session IDs to include in the search result.
             
         Returns
         -------
@@ -211,10 +218,10 @@ class WhooshIndexAsync:
             Sorted list of document IDs and their relevance scores, highest first.
         """
         loop = asyncio.get_event_loop()
-        ret = await loop.run_in_executor(None, self._query, query_text, top_n)
+        ret = await loop.run_in_executor(None, self._query, query_text, top_n, filter_ids)
         return ret
 
-    def _query(self, query_text: str, top_n: int = 10) -> List[Tuple[str, float]]:
+    def _query(self, query_text: str, top_n: int = 10, filter_ids: list[int]=[]) -> List[Tuple[str, float]]:
         """Synchronized query"""
         if not self.index:
             return []
@@ -223,8 +230,19 @@ class WhooshIndexAsync:
             searcher = self.index.searcher()
             parser = QueryParser("content", self.schema)
             query = parser.parse(query_text)
-            
-            results = searcher.search(query, limit=top_n)
+
+            if filter_ids:
+                # join with "or"
+                query_filter = None
+                for _id in filter_ids:
+                    id_str = str(_id)
+                    if query_filter is None:
+                        query_filter = Term("session_id", id_str)
+                    else:
+                        query_filter = query_filter | Term("session_id", id_str)
+                results = searcher.search(query, limit=top_n, filter=query_filter)
+            else:
+                results = searcher.search(query, limit=top_n)
             
             # Convert to (doc_id, score) tuples
             return [(hit['doc_id'], hit.score) for hit in results]

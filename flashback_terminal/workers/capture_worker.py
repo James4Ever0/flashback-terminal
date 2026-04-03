@@ -123,7 +123,8 @@ class CaptureWorker:
             capture = await self.session_manager.capture_session(
                 session_id, full_scrollback=self.capture_full_scrollback
             )
-            session_terminal_size = self.session_manager.get_session(session_id)._terminal_size
+            sess = self.session_manager.get_session(session_id)
+            session_terminal_size = sess._terminal_size
             if session_terminal_size:
                 cols=session_terminal_size.get('cols', 0)
                 rows=session_terminal_size.get('rows', 0)
@@ -159,6 +160,7 @@ class CaptureWorker:
             # Store in database
             capture_id = await self.db.insert_terminal_capture(
                 session_id=db_session.id,
+                session_uuid=db_session.uuid,
                 screenshot_path=screenshot_path,
                 text_content=text_content,
                 ansi_content=capture.ansi,

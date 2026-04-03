@@ -10,7 +10,6 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from flashback_terminal.logger import logger
 
-
 class BM25SQLiteIndexAsync:
     """
     An async BM25 index implementation with SQLite persistence for terminal search.
