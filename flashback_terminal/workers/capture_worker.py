@@ -160,7 +160,6 @@ class CaptureWorker:
             # Store in database
             capture_id = await self.db.insert_terminal_capture(
                 session_id=db_session.id,
-                session_uuid=db_session.uuid,
                 screenshot_path=screenshot_path,
                 text_content=text_content,
                 ansi_content=capture.ansi,

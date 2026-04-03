@@ -152,7 +152,6 @@ class Database:
                 CREATE TABLE IF NOT EXISTS terminal_captures (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                    session_uuid TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     screenshot_path TEXT,              -- Path to PNG screenshot (backend rendered)
                     text_content TEXT,                 -- Plain text content (OCR result)
@@ -439,7 +438,6 @@ class Database:
     async def insert_terminal_capture(
         self,
         session_id: int,
-        session_uuid: str,
         screenshot_path: Optional[str] = None,
         text_content: Optional[str] = None,
         ansi_content: Optional[str] = None,
@@ -450,9 +448,9 @@ class Database:
         async with self._connect() as conn:
             cursor = await conn.execute(
                 """INSERT INTO terminal_captures
-                    (session_id, session_uuid, screenshot_path, text_content, ansi_content, capture_type, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, session_uuid, screenshot_path, text_content, ansi_content,
+                    (session_id, screenshot_path, text_content, ansi_content, capture_type, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, screenshot_path, text_content, ansi_content,
                  capture_type, json.dumps(metadata or {})),
             )
             await conn.commit()
