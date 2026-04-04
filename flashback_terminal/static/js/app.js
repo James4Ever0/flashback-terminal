@@ -455,6 +455,13 @@ class App {
         });
 
         document.getElementById('btn-do-search').addEventListener('click', () => this.doSearch());
+        
+        // Add Enter key event listener to search input
+        document.getElementById('search-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.doSearch();
+            }
+        });
 
         // TODO: only if no tab to attach (all tabs in background are not running), we would create a new one instead. otherwise attach existing ones.
         // await this.createTab();
@@ -964,7 +971,9 @@ class App {
             const content = decodeURI(encodedContent);
             const previewContent = document.createElement('div');
             previewContent.className = 'preview-content';
-            previewContent.textContent = content.substring(0, 300);
+            // no truncation or we cannot scroll to highlight.
+            // previewContent.textContent = content.substring(0, 300);
+            previewContent.textContent = content
             
             // Clear tooltip and add content
             tooltip.innerHTML = '';
@@ -979,19 +988,51 @@ class App {
                     className: 'search-highlight',
                     caseSensitive: false,
                     exclude: ['script', 'style', 'title', 'head', 'html'],
-                    done: () => {
-                        // Auto-scroll to first highlighted element
-                        this.scrollToFirstHighlight(previewContent);
-                    }
+                    // done: () => {
+                    // Not working, since at this moment the area is not visible.
+                    //     // Auto-scroll to first highlighted element
+                    //     this.scrollToFirstHighlight(previewContent);
+                    // }
                 });
             }
             
             tooltip.style.display = 'block';
             
-            // Position tooltip
+            // Position tooltip with directional logic
             const rect = element.getBoundingClientRect();
-            tooltip.style.left = `${rect.left}px`;
-            tooltip.style.top = `${rect.bottom + 5}px`;
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            
+            // Determine vertical position (top vs bottom)
+            const isInTopHalf = rect.top < viewportHeight / 2;
+            let topPosition;
+            
+            if (isInTopHalf) {
+                // Show below the element (current behavior)
+                topPosition = rect.bottom + 5;
+            } else {
+                // Show above the element
+                topPosition = rect.top - tooltipRect.height - 5;
+            }
+            
+            // Determine horizontal position (left vs right)
+            const isInLeftHalf = rect.left < viewportWidth / 2;
+            let leftPosition;
+            
+            if (isInLeftHalf) {
+                // Align with left edge of element (current behavior)
+                leftPosition = rect.left;
+            } else {
+                // Align with right edge of element
+                leftPosition = rect.right - tooltipRect.width;
+            }
+            
+            tooltip.style.left = `${leftPosition}px`;
+            tooltip.style.top = `${topPosition}px`;
+
+            // this.scrollToFirstHighlight(tooltip);
+            this.scrollToLastHighlight(tooltip);
         }
     }
 
@@ -1022,10 +1063,11 @@ class App {
                     className: 'search-highlight',
                     caseSensitive: false,
                     exclude: ['script', 'style', 'title', 'head', 'html'],
-                    done: () => {
-                        // Auto-scroll to first highlighted element
-                        this.scrollToFirstHighlight(previewContent);
-                    }
+                    // not working, the modal is not ready yet.
+                    // done: () => {
+                    //     // Auto-scroll to first highlighted element
+                    //     this.scrollToFirstHighlight(previewContent);
+                    // }
                 });
             }
             
@@ -1034,6 +1076,8 @@ class App {
             
             // Add escape key listener
             document.addEventListener('keydown', this.handleEscapeKey);
+            // this.scrollToFirstHighlight(modal);
+            this.scrollToLastHighlight(modal);
         }
     }
     
@@ -1052,18 +1096,32 @@ class App {
         }
     }
 
+    // more useful than scrollToFirstHighlight.
+    scrollToLastHighlight(container) {
+        const searchHighlights = container.getElementsByClassName('search-highlight');
+        // console.log("search highlight selected elements:", firstHighlight)
+        if (searchHighlights.length !== 0) {
+            // Scroll the highlighted element into view
+            const lastHighlight = searchHighlights[searchHighlights.length - 1]
+            lastHighlight.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+        }
+    }
+
     scrollToFirstHighlight(container) {
         const firstHighlight = container.querySelector('.search-highlight');
         console.log("search highlight selected elements:", firstHighlight)
         if (firstHighlight) {
             // Scroll the highlighted element into view
             // console.log("focusing the first highlight element");
-            firstHighlight.scrollIntoView();
-            // firstHighlight.scrollIntoView({
-            //     behavior: 'smooth',
-            //     block: 'center',
-            //     inline: 'nearest'
-            // });
+            firstHighlight.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
         }
     }
 
