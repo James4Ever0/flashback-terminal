@@ -52,12 +52,24 @@
     <!-- Sessions Modal -->
     <div id="sessions-modal" class="modal hidden">
         <div class="modal-content">
-            <span class="close-btn">&times;</span>
+            <span class="close-btn" onclick="app.closeExpandedPreview()">&times;</span>
             <h2>Sessions</h2>
             <div id="sessions-list"></div>
         </div>
     </div>
 
+    <!-- Expanded Preview Modal -->
+    <div id="expanded-preview-modal" class="modal hidden">
+        <div class="expanded-preview-content">
+            <div class="expanded-preview-header">
+                <h3>Search Result Preview</h3>
+                <span class="close-btn" onclick="app.closeExpandedPreview()">&times;</span>
+            </div>
+            <div class="expanded-preview-body" id="expanded-preview-body"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/vendor/mark.min.js"></script>
     <script src="/static/js/vendor/xterm.js"></script>
     <script src="/static/js/vendor/xterm-addon-fit.js"></script>
     <script src="/static/js/app.js"></script>

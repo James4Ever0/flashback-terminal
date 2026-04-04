@@ -433,6 +433,9 @@ class App {
         FrontendLogger.info('App initializing...');
         const exitLog = FrontendLogger.logFunction('App.init');
 
+        // Hide expanded preview modal on initialization
+        this.closeExpandedPreview();
+
         document.getElementById('btn-new-tab').addEventListener('click', () => {
             FrontendLogger.debug('New tab button clicked');
             this.createTab();
@@ -772,6 +775,9 @@ class App {
     }
 
     openSearch() {
+        // Hide any expanded preview when opening search
+        this.closeExpandedPreview();
+        
         // Reset search form to pristine state
         document.getElementById('search-input').value = '';
         document.getElementById('search-results').innerHTML = '';
@@ -862,77 +868,215 @@ class App {
 
         console.log("sessions map", sessions_map);
 
+        // Group results by session UUID and title
+        const groupedResults = {};
+        results.forEach(r => {
+            const sessionKey = `${r.session_uuid}|${r.session_name}`;
+            if (!groupedResults[sessionKey]) {
+                groupedResults[sessionKey] = {
+                    session_uuid: r.session_uuid,
+                    session_name: r.session_name,
+                    results: []
+                };
+            }
+            groupedResults[sessionKey].results.push(r);
+        });
 
-        const resultsHtml = results.map(r => {
-            const isRunning = runningUuids.has(r.session_uuid);
+        // Store search query for highlighting
+        this.currentSearchQuery = document.getElementById('search-input').value;
 
-            // var buttonClass = 'jump-btn';
-            // var buttonText = "jump to terminal";
-            // var onClick = "";
+        const resultsHtml = Object.entries(groupedResults).map(([sessionKey, sessionGroup]) => {
+            const isRunning = runningUuids.has(sessionGroup.session_uuid);
+            const sess = sessions_map[sessionGroup.session_uuid];
 
             var buttonClass = isRunning ? 'jump-btn' : 'jump-btn disabled';
             var buttonText = isRunning ? 'Jump to Terminal' : 'Terminal Not Available';
-            var onClick = isRunning ? `app.jumpToTerminal('${r.session_uuid}')` : '';
+            var onClick = isRunning ? `app.jumpToTerminal('${sessionGroup.session_uuid}')` : '';
 
-            // if not in current opened tab set, at least we should get all session status?
-
-            // console.log("allSessionsData:", allSessionsData);
-            // console.log("Session uuid:", r.session_uuid);
-
-            if (buttonClass !== 'jump-btn') {
-                const sess = sessions_map[r.session_uuid];
-
-                if (sess) {
-                    // TODO: if it is attachable, socket present, then we shall attach to it. otherwise we clone it. add attribute: socket_present
-                    if (sess.socket_present) {
-
-                        const existingTab = this.tabs.find(t => t.uuid === sess.uuid);
-
-                        if (existingTab) {
-                            buttonClass = 'btn-attach';
-                            buttonText = 'Attach';
-                            onClick = `app.attachToSession('${r.session_uuid}')`;
-                        } else {
-                            buttonClass = 'btn-attach';
-                            buttonText = 'Force Attach';
-                            onClick = `app.forceAttachToSession('${r.session_uuid}')`;
-                        }
+            if (!isRunning && sess) {
+                if (sess.socket_present) {
+                    const existingTab = this.tabs.find(t => t.uuid === sess.uuid);
+                    if (existingTab) {
+                        buttonClass = 'btn-attach';
+                        buttonText = 'Attach';
+                        onClick = `app.attachToSession('${sessionGroup.session_uuid}')`;
                     } else {
-                        buttonClass = 'btn-restore';
-                        buttonText = 'Revive';
-                        onClick = `app.reviveSession('${r.session_uuid}')`;
+                        buttonClass = 'btn-attach';
+                        buttonText = 'Force Attach';
+                        onClick = `app.forceAttachToSession('${sessionGroup.session_uuid}')`;
                     }
                 } else {
-                    buttonClass = 'jump-btn disabled'
-                    buttonText = "Terminal not available"
-                    onClick = '';
+                    buttonClass = 'btn-restore';
+                    buttonText = 'Revive';
+                    onClick = `app.reviveSession('${sessionGroup.session_uuid}')`;
                 }
+            } else if (!isRunning && !sess) {
+                buttonClass = 'jump-btn disabled';
+                buttonText = "Terminal not available";
+                onClick = '';
             }
 
 
+            // Create timestamp tabs
+            const timestampTabs = sessionGroup.results.map((r, index) => {
+                const timestamp = new Date(r.timestamp).toLocaleString();
+                const encodedContent = encodeURI(r.content);
+                return `
+                    <div class="timestamp-tab" 
+                         onmouseenter="app.showSearchPreview('${r.session_uuid}', '${r.timestamp}', this)"
+                         onmouseleave="app.hideSearchPreview()"
+                         onclick="app.showExpandedPreview('${r.session_uuid}', '${r.timestamp}', this)"
+                         data-timestamp="${r.timestamp}"
+                         data-content="${encodedContent}">
+                        <span class="timestamp-text">${timestamp}</span>
+                        <div class="preview-tooltip" id="preview-${r.session_uuid}-${r.timestamp}"></div>
+                    </div>
+                `;
+            }).join('');
+
             return `
-            <div class="search-result">
-                <div class="result-header">
-                    <span class="session-name">${r.session_name}</span>
-                    <span class="timestamp">${r.timestamp}</span>
+            <div class="search-result-group">
+                <div class="session-header">
+                    <div class="session-info">
+                        <div class="session-name">${sessionGroup.session_name}</div>
+                        <div class="session-uuid">UUID: ${sessionGroup.session_uuid}</div>
+                    </div>
+                    <button class="${buttonClass}" data-uuid="${sessionGroup.session_uuid}" onclick="${onClick}">
+                        ${buttonText}
+                    </button>
                 </div>
-                <pre class="result-content">${r.content.substring(0, 200)}...</pre>
-                <button class="${buttonClass}" data-uuid="${r.session_uuid}" onclick="${onClick}">
-                    ${buttonText}
-                </button>
+                <div class="timestamp-tabs-container">
+                    ${timestampTabs}
+                </div>
             </div>
-        `}).join('');
+        `;
+        }).join('');
 
         container.innerHTML = countFeedback + resultsHtml;
+    }
 
-        // Add click handlers for jump buttons
-        // container.querySelectorAll('.jump-btn:not(.disabled)').forEach(btn => {
-        //     btn.addEventListener('click', (e) => {
-        //         const uuid = e.target.getAttribute('data-uuid');
-        //         this.jumpToTerminal(uuid);
-        //     });
-        // });
+    showSearchPreview(sessionUuid, timestamp, element) {
+        const tooltip = document.getElementById(`preview-${sessionUuid}-${timestamp}`);
+        const encodedContent = element.getAttribute('data-content');
+        
+        if (tooltip && encodedContent) {
+            // Decode the content and create preview element
+            const content = decodeURI(encodedContent);
+            const previewContent = document.createElement('div');
+            previewContent.className = 'preview-content';
+            previewContent.textContent = content.substring(0, 300);
+            
+            // Clear tooltip and add content
+            tooltip.innerHTML = '';
+            tooltip.appendChild(previewContent);
+            
+            // Use mark.js to highlight keywords
+            const encodedQuery = encodeURI(this.currentSearchQuery.trim());
+            const query = decodeURI(encodedQuery);
+            if (query) {
+                const markInstance = new Mark(previewContent);
+                markInstance.mark(query, {
+                    className: 'search-highlight',
+                    caseSensitive: false,
+                    exclude: ['script', 'style', 'title', 'head', 'html'],
+                    done: () => {
+                        // Auto-scroll to first highlighted element
+                        this.scrollToFirstHighlight(previewContent);
+                    }
+                });
+            }
+            
+            tooltip.style.display = 'block';
+            
+            // Position tooltip
+            const rect = element.getBoundingClientRect();
+            tooltip.style.left = `${rect.left}px`;
+            tooltip.style.top = `${rect.bottom + 5}px`;
+        }
+    }
 
+    showExpandedPreview(sessionUuid, timestamp, element) {
+        const modal = document.getElementById('expanded-preview-modal');
+        const previewBody = document.getElementById('expanded-preview-body');
+        const encodedContent = element.getAttribute('data-content');
+        
+        if (modal && previewBody && encodedContent) {
+            // Decode the content
+            const content = decodeURI(encodedContent);
+            
+            // Create preview element
+            const previewContent = document.createElement('div');
+            previewContent.className = 'expanded-preview-text';
+            previewContent.textContent = content;
+            
+            // Clear and set content
+            previewBody.innerHTML = '';
+            previewBody.appendChild(previewContent);
+            
+            // Use mark.js to highlight keywords
+            const encodedQuery = encodeURI(this.currentSearchQuery.trim());
+            const query = decodeURI(encodedQuery);
+            if (query) {
+                const markInstance = new Mark(previewContent);
+                markInstance.mark(query, {
+                    className: 'search-highlight',
+                    caseSensitive: false,
+                    exclude: ['script', 'style', 'title', 'head', 'html'],
+                    done: () => {
+                        // Auto-scroll to first highlighted element
+                        this.scrollToFirstHighlight(previewContent);
+                    }
+                });
+            }
+            
+            // Show modal
+            modal.classList.remove('hidden');
+            
+            // Add escape key listener
+            document.addEventListener('keydown', this.handleEscapeKey);
+        }
+    }
+    
+    closeExpandedPreview() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+            // Remove escape key listener
+            document.removeEventListener('keydown', this.handleEscapeKey);
+        }
+    }
+    
+    handleEscapeKey = (event) => {
+        if (event.key === 'Escape') {
+            this.closeExpandedPreview();
+        }
+    }
+
+    scrollToFirstHighlight(container) {
+        const firstHighlight = container.querySelector('.search-highlight');
+        console.log("search highlight selected elements:", firstHighlight)
+        if (firstHighlight) {
+            // Scroll the highlighted element into view
+            // console.log("focusing the first highlight element");
+            firstHighlight.scrollIntoView();
+            // firstHighlight.scrollIntoView({
+            //     behavior: 'smooth',
+            //     block: 'center',
+            //     inline: 'nearest'
+            // });
+        }
+    }
+
+    hideSearchPreview() {
+        document.querySelectorAll('.preview-tooltip').forEach(tooltip => {
+            tooltip.style.display = 'none';
+        });
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     jumpToTerminal(uuid) {
@@ -945,6 +1089,9 @@ class App {
     }
 
     closeSearchModal() {
+        // Hide expanded preview when closing search modal
+        this.closeExpandedPreview();
+        
         if (!document.getElementById('search-modal').classList.contains('hidden')) {
             document.getElementById('search-modal').classList.add('hidden');
         }
