@@ -227,6 +227,12 @@ button:hover {
     color: #888;
 }
 
+.session-header .session-type {
+    font-family: monospace;
+    font-size: 12px;
+    color: #888;
+}
+
 .timestamp-tabs-container {
     display: flex;
     flex-wrap: wrap;
@@ -376,7 +382,8 @@ button:hover {
     line-height: 1.4;
 }
 
-.session-uuid {
+.session-uuid,
+.session-mode {
     font-family: monospace;
     color: #888;
     margin-bottom: 4px;

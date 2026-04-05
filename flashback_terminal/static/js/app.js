@@ -900,6 +900,7 @@ class App {
                 groupedResults[sessionKey] = {
                     session_uuid: r.session_uuid,
                     session_name: r.session_name,
+                    session_type: r.session_type,
                     results: []
                 };
             }
@@ -964,6 +965,7 @@ class App {
                     <div class="session-info">
                         <div class="session-name">${sessionGroup.session_name}</div>
                         <div class="session-uuid">UUID: ${sessionGroup.session_uuid}</div>
+                        <div class="session-type">Mode: ${sessionGroup.session_type}</div>
                     </div>
                     <button class="${buttonClass}" data-uuid="${sessionGroup.session_uuid}" onclick="${onClick}">
                         ${buttonText}
@@ -1253,6 +1255,7 @@ class App {
                         <div class="session-name">${s.name}</div>
                         <div class="session-details">
                             <div class="session-uuid">UUID: ${s.uuid}</div>
+                            <div class="session-mode">Mode: ${s.session_type}</div>
                             <div class="session-created">Created: ${formattedDate}</div>
                             ${s.last_cwd ? `<div class="session-cwd">Last CWD: ${s.last_cwd}</div>` : ''}
                             <div class="session-profile">Profile: ${s.profile_name}</div>

@@ -472,6 +472,10 @@ class TerminalManager:
                 # remove this entry already. no need to exist.
                 session_ids_to_close.add(uuid)
                 continue
+            if not term_sess.is_running_buffered:
+                # since the buffered is_running result shows it is dead, we will purge it.
+                session_ids_to_close.add(uuid)
+                continue
             check_task_coro = term_sess_sess._is_running()
             _check_task = asyncio.create_task(check_task_coro, name=uuid)
             check_tasks.append(_check_task)
