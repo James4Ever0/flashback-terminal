@@ -396,8 +396,8 @@ class App {
             uuidToTargetIndex.set(savedTab.uuid, index);
         });
 
-        console.log("UUID to target index:");
-        console.dir(uuidToTargetIndex);
+        // console.log("UUID to target index:");
+        // console.dir(uuidToTargetIndex);
 
         const restoredTabs = [];
         let activeTabRestored = null;
@@ -466,6 +466,7 @@ class App {
             for (const result of results) {
                 if (result) {
                     restoredTabs.push(result.tab);
+                    this.switchTab(result.tab);
                     if (result.isActive) {
                         activeTabRestored = result.tab;
                     }
@@ -476,7 +477,6 @@ class App {
             if (restoredTabs.length > 0) {
                 const tabToSwitch = activeTabRestored || restoredTabs[0];
                 this.switchTab(tabToSwitch);
-                this.renderTabs();
                 FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
             } else {
                 FrontendLogger.warn('No tabs could be restored');
@@ -487,6 +487,7 @@ class App {
         } finally {
             // Ensure progress overlay is hidden no matter what happens
             this.hideRestoreProgress();
+            this.renderTabs();
         }
     }
 
