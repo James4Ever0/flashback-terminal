@@ -90,6 +90,7 @@ class TerminalTab {
             },
             cursorBlink: true,
             convertEol: true
+            // forceRender: true
         });
 
         this.fitAddon = new FitAddon.FitAddon();
@@ -103,7 +104,7 @@ class TerminalTab {
         this.socket = new WebSocket(wsUrl);
 
         this.socket.onopen = () => {
-            FrontendLogger.info(`WebSocket connected: uuid=${this.uuid}`);
+            FrontendLogger.info(`[Terminal ${this.uuid}] WebSocket connected: uuid=${this.uuid}`);
             // this.startScreenshotCapture();
             // resize terminal initially.
             this.fitAddon.fit();
@@ -111,7 +112,7 @@ class TerminalTab {
         };
 
         this.socket.onmessage = (event) => {
-            FrontendLogger.trace('WebSocket message received:', event.data.substring(0, 200));
+            FrontendLogger.trace(`[Terminal ${this.uuid}] WebSocket message received:`, event.data.substring(0, 200));
             const msg = JSON.parse(event.data);
             this.handleMessage(msg);
         };
@@ -252,41 +253,6 @@ class TerminalTab {
         }
     }
 
-    // startScreenshotCapture() {
-    //     const interval = 10000;
-    //     this.screenshotInterval = setInterval(() => {
-    //         this.captureAndUpload();
-    //     }, interval);
-    // }
-
-    // stopScreenshotCapture() {
-    //     if (this.screenshotInterval) {
-    //         clearInterval(this.screenshotInterval);
-    //         this.screenshotInterval = null;
-    //     }
-    // }
-
-    // captureAndUpload() {
-    //     const canvas = this.terminal.element.querySelector('canvas');
-    //     if (!canvas) return;
-
-    //     canvas.toBlob((blob) => {
-    //         const reader = new FileReader();
-    //         reader.onloadend = () => {
-    //             const base64data = reader.result;
-    //             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-    //                 this.socket.send(JSON.stringify({
-    //                     type: 'command',
-    //                     cmd: 'screenshot_upload',
-    //                     timestamp: new Date().toISOString(),
-    //                     data: base64data
-    //                 }));
-    //             }
-    //         };
-    //         reader.readAsDataURL(blob);
-    //     }, 'image/png');
-    // }
-
     focus() {
         this.terminal.focus();
     }
@@ -344,6 +310,7 @@ class App {
         this.STORAGE_KEY = 'flashback-terminal-tabs';
         this.previewTimeout = null;
         this.currentPreviewTab = null;
+        this.draggedTab = null;
     }
 
     saveTabState() {
@@ -646,6 +613,7 @@ class App {
     handleDragStart(e, tabIndex) {
         // focus on the dragged tab first, then handle all the drag events later.
         const draggedTab = this.tabs[tabIndex];
+        this.draggedTab = draggedTab;
         if (draggedTab) {
             // Focus the terminal without re-rendering tabs to avoid disrupting drag operation
             if (this.activeTab) {
@@ -682,6 +650,7 @@ class App {
     }
 
     handleDragLeave(e) {
+        this.draggedTab = null;
         if (e.target.classList.contains('tab')) {
             e.target.classList.remove('drag-over');
         }
@@ -742,41 +711,63 @@ class App {
             this.currentPreviewTab = tab;
 
             // Create or get preview container
-            let previewContainer = document.getElementById('tab-preview');
-            if (!previewContainer) {
-                previewContainer = document.createElement('div');
-                previewContainer.id = 'tab-preview';
-                previewContainer.className = 'tab-preview';
-                document.body.appendChild(previewContainer);
+            // let previewContainer = document.getElementById('tab-preview');
+            // if (!previewContainer) {
+            //     previewContainer = document.createElement('div');
+            //     previewContainer.id = 'tab-preview';
+            //     previewContainer.className = 'tab-preview';
+            //     document.body.appendChild(previewContainer);
+            // }
+
+            // Force render terminal content even when not focused for tab preview
+            // This ensures the preview shows up-to-date terminal content
+
+
+            if (this.activeTab) {
+                this.activeTab.terminal.element.style.display = 'none';
             }
 
+            if (tab.terminal){
+                tab.terminal.element.style.display = "block";
+                tab.terminal.focus();
+            }
+
+            // if (tab.terminal){
+            //     let _element = tab.terminal.element;
+            //     let _element_display = _element.style.display;
+            //     _element.style.display = '';
+            //     _element.offsetHeight;
+            //     _element.style.display = 'none';
+            //     _element.offsetHeight;
+            //     _element.style.display = _element_display;
+            // }
             // Clone the terminal content for preview
-            const terminalElement = tab.terminal.element;
-            const previewContent = terminalElement.cloneNode(true);
-            previewContent.style.display = 'block';
-            previewContent.style.position = 'static';
-            previewContent.style.height = '400px';
-            previewContent.style.overflow = 'hidden';
+            // const terminalElement = tab.terminal.element;
+            // const previewContent = terminalElement.cloneNode(true);
+            // previewContent.style.display = 'block';
+            // previewContent.style.position = 'static';
+            // previewContent.style.height = '400px';
+            // previewContent.style.overflow = 'hidden';
 
-            // Clear preview container and add content
-            previewContainer.innerHTML = '';
-            previewContainer.appendChild(previewContent);
+            // // Clear preview container and add content
+            // previewContainer.innerHTML = '';
+            // previewContainer.appendChild(previewContent);
 
-            // Position preview relative to the terminal container
-            const terminalContainer = document.getElementById('terminal-container');
-            const containerRect = terminalContainer.getBoundingClientRect();
+            // // Position preview relative to the terminal container
+            // const terminalContainer = document.getElementById('terminal-container');
+            // const containerRect = terminalContainer.getBoundingClientRect();
 
-            previewContainer.style.position = 'fixed';
-            previewContainer.style.top = `${containerRect.top + 20}px`;
-            previewContainer.style.left = `${containerRect.left + 20}px`;
-            previewContainer.style.width = `${containerRect.width - 40}px`;
-            previewContainer.style.zIndex = '1000';
-            previewContainer.style.display = 'block';
+            // previewContainer.style.position = 'fixed';
+            // previewContainer.style.top = `${containerRect.top + 20}px`;
+            // previewContainer.style.left = `${containerRect.left + 20}px`;
+            // previewContainer.style.width = `${containerRect.width - 40}px`;
+            // previewContainer.style.zIndex = '1000';
+            // previewContainer.style.display = 'block';
 
             FrontendLogger.debug(`Showing preview for tab: ${tab.name}`);
 
             // scroll to xterm-cursor.
-            this.scrollToLastHighlight(previewContainer, "xterm-cursor");
+            // this.scrollToLastHighlight(previewContainer, "xterm-cursor");
         }, 500); // 500ms delay
     }
 
@@ -787,11 +778,24 @@ class App {
             this.previewTimeout = null;
         }
 
-        // Hide existing preview
-        const previewContainer = document.getElementById('tab-preview');
-        if (previewContainer) {
-            previewContainer.style.display = 'none';
+        if (this.activeTab) {
+            this.activeTab.terminal.element.style.display = 'block';
         }
+
+        if (this.currentPreviewTab){
+            if (this.draggedTab){
+                FrontendLogger.info("Skip hiding preview tab since it is being dragged");
+            }else{
+                this.currentPreviewTab.terminal.focus();
+                this.currentPreviewTab.terminal.element.style.display = "none";
+            }
+        }
+
+        // Hide existing preview
+        // const previewContainer = document.getElementById('tab-preview');
+        // if (previewContainer) {
+        //     previewContainer.style.display = 'none';
+        // }
 
         this.currentPreviewTab = null;
         FrontendLogger.debug('Hiding tab preview');
@@ -799,7 +803,7 @@ class App {
 
     renderTabs() {
         const container = document.getElementById('tabs');
-        container.innerHTML = '';
+        container.innerHTML = ''; // clear all tabs? could be inefficient?
 
         for (let i = 0; i < this.tabs.length; i++) {
             const tab = this.tabs[i];
