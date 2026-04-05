@@ -58,6 +58,32 @@ class TerminalSession:
         self._running = False
         self.is_running_buffered=False
 
+        self._last_write: Optional[float] = None
+        self._last_write_chars: Optional[int] = None
+        self._last_read: Optional[float] = None
+        self._last_read_chars: Optional[int] = None
+    
+    def get_instanteous_write_speed(self) -> float:
+        """Get write speed in chars per second"""
+        if not self._last_write: return 0
+        if not self._last_write_chars: return 0
+        now = asyncio.get_running_loop().time()
+        elapsed_time = now - self._last_write
+        if not elapsed_time: return 0
+        speed = self._last_write_chars / elapsed_time
+        return speed
+    
+    def get_instanteous_read_speed(self) -> float:
+        """Get read speed in chars per second"""
+        if not self._last_read: return 0
+        if not self._last_read_chars: return 0
+        now = asyncio.get_running_loop().time()
+        elapsed_time = now - self._last_read
+        if not elapsed_time: return 0
+        speed = self._last_read_chars / elapsed_time
+        return speed
+
+
     def _on_session_clear(self) -> None:
         """Handle clear event from underlying session."""
         if self.on_clear:
@@ -120,6 +146,8 @@ class TerminalSession:
     async def write(self, data: str) -> None:
         """Write data to the terminal."""
         if self._session and self._running:
+            self._last_write = asyncio.get_running_loop().time()
+            self._last_write_chars = len(data)
             await self._session.write(data)
 
     async def read(self, timeout: float = 0.1) -> Optional[str]:
@@ -130,6 +158,9 @@ class TerminalSession:
         data = await self._session.read(timeout)
         if data is None and not await self._session.is_running():
             self._running = False
+        if data is not None:
+            self._last_read = asyncio.get_running_loop().time()
+            self._last_read_chars = len(data)
         return data
 
     async def update_cwd(self, cwd: str) -> None:

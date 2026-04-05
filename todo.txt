@@ -38,3 +38,4 @@
 - [ ] need to sort search result by timestamp, need to limit search scope of certain ids.
 - [ ] need to just view different terminal screenshots by timeline.
 - [ ] remove socket path on session exit, and double check if the session is really running using api. if not, use revive session methods. in tmux case, the socket path will still present. use tmux -S xxx kill-server to ensure this. in screen the logic works perfectly. the socket will indeed disapper.
+- [x] track io speed per terminal. might be useful for debug. for example, xx kb per second, xx kb per minute. use a monochronic timestamp for that? for example, use xx seconds ago, calculate the timestamp, update the timestamp, then calculate instantaneous speed.
