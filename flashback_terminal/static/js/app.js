@@ -392,48 +392,62 @@ class App {
         const restoredTabs = [];
         let activeTabRestored = null;
 
-        for (const savedTab of savedState.tabs) {
-            try {
-                // Try to attach to existing session
-                const response = await fetch(`/api/sessions/${savedTab.uuid}/attach`, {
-                    method: 'POST'
-                });
+        try {
+            // Show progress overlay
+            this.showRestoreProgress(savedState.tabs.length);
 
-                if (response.ok) {
-                    const result = await response.json();
-                    FrontendLogger.info(`Successfully restored tab: ${savedTab.name} (${savedTab.uuid})`);
+            let currentTab = 0;
+            for (const savedTab of savedState.tabs) {
+                currentTab++;
+                this.updateRestoreProgress(currentTab, savedState.tabs.length);
 
-                    // Create tab instance
-                    const tab = new TerminalTab(result.uuid, result.name);
-                    tab.originalName = savedTab.originalName;
-                    tab.titleOverride = savedTab.titleOverride;
-                    tab.app = this;
+                try {
+                    // Try to attach to existing session
+                    const response = await fetch(`/api/sessions/${savedTab.uuid}/attach`, {
+                        method: 'POST'
+                    });
 
-                    this.tabs.push(tab);
-                    await tab.connect();
-                    restoredTabs.push(tab);
+                    if (response.ok) {
+                        const result = await response.json();
+                        FrontendLogger.info(`Successfully restored tab: ${savedTab.name} (${savedTab.uuid})`);
 
-                    // Set as active tab if it was the active one
-                    if (savedTab.uuid === savedState.activeTabUuid) {
-                        activeTabRestored = tab;
+                        // Create tab instance
+                        const tab = new TerminalTab(result.uuid, result.name);
+                        tab.originalName = savedTab.originalName;
+                        tab.titleOverride = savedTab.titleOverride;
+                        tab.app = this;
+
+                        this.tabs.push(tab);
+                        await tab.connect();
+                        restoredTabs.push(tab);
+
+                        // Set as active tab if it was the active one
+                        if (savedTab.uuid === savedState.activeTabUuid) {
+                            activeTabRestored = tab;
+                        }
+                    } else {
+                        FrontendLogger.warn(`Failed to restore tab: ${savedTab.name} (${savedTab.uuid}) - session may not be available`);
                     }
-                } else {
-                    FrontendLogger.warn(`Failed to restore tab: ${savedTab.name} (${savedTab.uuid}) - session may not be available`);
+                } catch (error) {
+                    FrontendLogger.error(`Error restoring tab ${savedTab.name}:`, error);
                 }
-            } catch (error) {
-                FrontendLogger.error(`Error restoring tab ${savedTab.name}:`, error);
             }
-        }
 
-        // Switch to the previously active tab, or the first restored tab
-        if (restoredTabs.length > 0) {
-            const tabToSwitch = activeTabRestored || restoredTabs[0];
-            this.switchTab(tabToSwitch);
-            this.renderTabs();
-            FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
-        } else {
-            FrontendLogger.warn('No tabs could be restored');
-            this.clearSavedTabState(); // Clear invalid state
+            // Switch to the previously active tab, or the first restored tab
+            if (restoredTabs.length > 0) {
+                const tabToSwitch = activeTabRestored || restoredTabs[0];
+                this.switchTab(tabToSwitch);
+                this.renderTabs();
+                FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
+            } else {
+                FrontendLogger.warn('No tabs could be restored');
+                this.clearSavedTabState(); // Clear invalid state
+            }
+        } catch (error) {
+            FrontendLogger.error('Unexpected error during tab restoration:', error);
+        } finally {
+            // Ensure progress overlay is hidden no matter what happens
+            this.hideRestoreProgress();
         }
     }
 
@@ -1543,6 +1557,40 @@ class App {
             if (await checkBackend()) {
                 break;
             }
+        }
+    }
+
+    showRestoreProgress(total) {
+        const overlay = document.getElementById('restore-progress-overlay');
+        const currentSpan = document.getElementById('restore-current');
+        const totalSpan = document.getElementById('restore-total');
+        const progressFill = document.getElementById('restore-progress-fill');
+        
+        if (overlay && currentSpan && totalSpan && progressFill) {
+            currentSpan.textContent = '0';
+            totalSpan.textContent = total;
+            progressFill.style.width = '0%';
+            overlay.classList.remove('hidden');
+            FrontendLogger.info(`Showing restore progress for ${total} tabs`);
+        }
+    }
+
+    updateRestoreProgress(current, total) {
+        const currentSpan = document.getElementById('restore-current');
+        const progressFill = document.getElementById('restore-progress-fill');
+        
+        if (currentSpan && progressFill) {
+            currentSpan.textContent = current;
+            const percentage = total > 0 ? (current / total) * 100 : 0;
+            progressFill.style.width = `${percentage}%`;
+        }
+    }
+
+    hideRestoreProgress() {
+        const overlay = document.getElementById('restore-progress-overlay');
+        if (overlay) {
+            overlay.classList.add('hidden');
+            FrontendLogger.info('Hiding restore progress overlay');
         }
     }
 }

@@ -79,6 +79,18 @@
         </div>
     </div>
 
+    <!-- Tab Restoration Progress Overlay -->
+    <div id="restore-progress-overlay" class="restore-progress-overlay hidden">
+        <div class="restore-progress-content">
+            <div class="restore-progress-spinner"></div>
+            <h3>Restoring Sessions</h3>
+            <div class="restore-progress-text">Restoring <span id="restore-current">0</span> of <span id="restore-total">0</span> sessions...</div>
+            <div class="restore-progress-bar">
+                <div class="restore-progress-fill" id="restore-progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/vendor/mark.min.js"></script>
     <script src="/static/js/vendor/xterm.js"></script>
     <script src="/static/js/vendor/xterm-addon-fit.js"></script>
