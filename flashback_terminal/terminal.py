@@ -7,7 +7,10 @@ This enables backend screenshot capture and text extraction.
 import uuid as uuid_mod
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
+import traceback
 import os
+import asyncio
+import atexit
 
 from flashback_terminal.config import get_config
 from flashback_terminal.database import Database
@@ -28,10 +31,12 @@ class TerminalSession:
         uuid: str,
         db: Database,
         profile: Dict[str, Any],
+        session_type: Optional[str] = None,
         on_output: Optional[Callable[[str], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
         on_cursor: Optional[Callable[[int, int], None]] = None,
     ):
+        config = get_config()
         self.session_id = session_id
         self.uuid = uuid
         self.db = db
@@ -39,6 +44,11 @@ class TerminalSession:
         self.on_clear = on_clear
         self.on_cursor = on_cursor
         self.profile = profile
+
+        if not session_type:
+            session_type = config.session_manager_mode
+
+        self.session_type = session_type
 
         self._terminal_size :Dict[str, int] = dict(rows=-1,cols=-1)
 
@@ -207,7 +217,6 @@ def check_socket_present(session_uuid:str, session_type:str) -> bool:
     return socket_accessible
 
 
-
 class TerminalManager:
     """Manages multiple terminal sessions."""
 
@@ -217,6 +226,13 @@ class TerminalManager:
         self.sessions: Dict[str, TerminalSession] = {}
         self.config = get_config()
         logger.debug("TerminalManager initialized")
+        # TODO: cancel the watch dog task on exit?
+        self._watchdog_interval = 1
+        self._watchdog_running = True
+        # TODO: watch dog is bad. it would kill normal background sessions after server exit. how about inject some "KeyboardInterrupt" listener, set a flag, and protecting from watchdog task taking effect?
+        self._watchdog_task = asyncio.create_task(self.watchdog())
+        atexit.register(self._close_sync)
+        self._closing = False
 
     @log_function(Logger.DEBUG)
     async def revive_session(self, session_uuid:str) -> Optional[TerminalSession]:
@@ -331,7 +347,7 @@ class TerminalManager:
                 socket_dir = config.get("session_manager.screen.socket_dir", "~/.flashback-terminal/screen")
 
                 socket_dir = os.path.expanduser(socket_dir)
-                socket_accessible=False
+                socket_accessible = False
 
                 if not os.path.isdir(socket_dir):
                     logger.warning(f"[TerminalManager] Socket directory {socket_dir} does not exist, cannot verify presense of screen session")
@@ -390,11 +406,15 @@ class TerminalManager:
 
     @log_function(Logger.DEBUG)
     async def create_session(
-        self, profile_name: str = "default", name: Optional[str] = None
+        self, profile_name: str = "default", name: Optional[str] = None, session_type: Optional[str]=None
     ) -> Optional[TerminalSession]:
         """Create a new terminal session."""
         logger.info(f"Creating session: profile={profile_name}, name={name}")
         profile = self.config.get_profile(profile_name)
+
+        if not session_type:
+            session_type = self.config.session_manager_mode
+
         if not profile:
             logger.error(f"Profile not found: {profile_name}")
             return None
@@ -403,7 +423,7 @@ class TerminalManager:
         session_name = name or f"Terminal {len(self.sessions) + 1}"
 
         session_id = await self.db.create_session(
-            uuid=uuid_str, name=session_name, profile_name=profile_name
+            uuid=uuid_str, name=session_name, profile_name=profile_name, session_type=session_type,
         )
 
         session = TerminalSession(
@@ -435,6 +455,102 @@ class TerminalManager:
                 ended_at=datetime.now().isoformat(),
             )
             del self.sessions[uuid]
+    
+    async def _watchdog_loop(self) -> tuple[int, int]:
+        """check all terminal sessions in 1 second period."""
+        # use asyncio.wait to wait for tasks.
+        check_tasks: list[asyncio.Task] = []
+        close_tasks: list[asyncio.Task] = []
+        # seriously, how do you know if one task is running
+
+        session_ids_to_close = set()
+        
+
+        for uuid, term_sess in self.sessions.items():
+            term_sess_sess = term_sess._session
+            if not term_sess_sess:
+                # remove this entry already. no need to exist.
+                session_ids_to_close.add(uuid)
+                continue
+            check_task_coro = term_sess_sess._is_running()
+            _check_task = asyncio.create_task(check_task_coro, name=uuid)
+            check_tasks.append(_check_task)
+
+        done, pending = await asyncio.wait(check_tasks, timeout=1)
+
+        for it in done:
+            task_name = it.get_name()
+            running = False
+            try:
+                running = it.result()
+            except Exception as e:
+                tb = traceback.format_exc()
+                logger.error("[TerminalManager] Error getting running check result from session %s: \n%s" % (task_name, tb))
+            if not running:
+                session_ids_to_close.add(task_name)
+
+        
+        for it in pending:
+            task_name = it.get_name()
+            # assume to be dead.
+            logger.info("[TerminalManager] Assume session %s to be dead because of timeout." % task_name)
+            it.cancel("[TerminalManager] Watchdog timeout for checking session %s running status" % task_name)
+            session_ids_to_close.add(task_name)
+
+        # for those pending, i suspect they are blocked. shall we terminate them as well?
+
+        if not self._watchdog_running:
+            return 0, len(session_ids_to_close)
+
+        if self._closing:
+            return 0, len(session_ids_to_close)
+
+        for uuid in session_ids_to_close:
+            close_task_coro = self.close_session(uuid)
+            _close_task = asyncio.create_task(close_task_coro, name=uuid)
+            close_tasks.append(_close_task)
+        
+        # TODO: add timeout for closing task?
+        done_close, pending_close = await asyncio.wait(close_tasks, timeout=2)
+
+        done_close_count = 0
+        fail_close_count = 0
+
+        for it in done_close:
+            task_name = it.get_name()
+            try:
+                it.result()
+                done_close_count += 1
+            except Exception as e:
+                fail_close_count += 1
+                tb = traceback.format_exc()
+                logger.error("[TerminalManager] Error closing session %s: \n%s" % (task_name, tb))
+        
+        for it in pending_close:
+            task_name = it.get_name()
+            fail_close_count += 1
+            logger.info("[TerminalManager] Failed to stop session %s because of timeout." % task_name)
+            it.cancel("[TerminalManager] Watchdog timeout for stopping session %s" % task_name)
+
+        return done_close_count, fail_close_count
+    
+    async def watchdog(self):
+        while self._watchdog_running:
+            if self._closing: break
+            time_start = asyncio.get_running_loop().time()
+            # TODO: report status?
+            success_count, fail_count = await self._watchdog_loop()
+            logger.info("[TerminalManager] Watchdog closed (success=%s, fail=%s, total=%s) inactive sessions" % (success_count, fail_count, success_count+fail_count))
+            time_end = asyncio.get_running_loop().time()
+            duration = time_end-time_start
+            if duration > self._watchdog_interval:
+                # skip sleep
+                continue
+            else:
+                sleep_time = self._watchdog_interval - duration
+                await asyncio.sleep(sleep_time)
+
+
 
     async def capture_session(
         self,
@@ -446,3 +562,30 @@ class TerminalManager:
         if session:
             return await session.capture(full_scrollback)
         return None
+    
+    @log_function(Logger.DEBUG)
+    def _close_sync(self):
+        asyncio.run(self.close())
+
+    @log_function(Logger.DEBUG)
+    async def close(self):
+        if self._closing: return # already closing.
+        self._closing=True
+        # first close all sessions? bad idea, since that will terminate the underlying session too. we want them be running in background even if server is down.
+
+        # close_tasks = []
+        # for uuid in self.sessions:
+        #     _close_coro = self.close_session(uuid)
+        #     _close_task = asyncio.create_task(_close_coro, name=uuid)
+        #     close_tasks.append(_close_task)
+        # await asyncio.gather(*close_tasks)
+
+        del self.sessions
+        del self.db
+        del self.config
+
+        # close watchdog task.
+        self._watchdog_running = False
+        if self._watchdog_task:
+            self._watchdog_task.cancel("[TerminalManager] Closing watchdog task on exit")
+            del self._watchdog_task

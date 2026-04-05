@@ -53,9 +53,14 @@ async def lifespan(app: FastAPI):
     logger.info("[Server] Starting flashback-terminal lifespan manager")
 
     config = get_config()
-    
-    if os.environ.get('CLI_VERBOSITY'):
-        config.set("logging.verbosity", int(os.environ.get('CLI_VERBOSITY')))
+
+    cli_verbosity = os.environ.get('CLI_VERBOSITY')
+    if cli_verbosity:
+        try:
+            cli_verbosity_int = int(cli_verbosity)
+        except ValueError:
+            raise RuntimeError("Cannot parse CLI_VERBOSITY from env as int: %s" % cli_verbosity)
+        config.set("logging.verbosity", cli_verbosity_int)
         logger.debug(f"Using CLI verbosity: {config.verbosity}")
 
     logger.info(f"Configuration loaded: verbosity={config.verbosity}")
@@ -198,8 +203,13 @@ async def index(request: Request):
     config = get_config()
     verbosity = config.verbosity
 
-    if os.environ.get('CLI_VERBOSITY'):
-        verbosity = int(os.environ.get('CLI_VERBOSITY'))
+    cli_verbosity = os.environ.get('CLI_VERBOSITY')
+
+    if cli_verbosity:
+        try:
+            verbosity = int(cli_verbosity)
+        except ValueError:
+            raise RuntimeError("Cannot parse CLI_VERBOSITY from env as int: %s" % cli_verbosity)
         logger.debug(f"[Server] Using CLI verbosity: {verbosity}")
 
     logger.debug(f"[Server] Serving index page with verbosity={verbosity}")
@@ -420,11 +430,31 @@ async def list_sessions(
 
 @app.post("/api/sessions")
 @log_function(Logger.DEBUG)
-async def create_session(profile: str = "default", name: Optional[str] = None):
+async def create_session(profile: str = "default", name: Optional[str] = None, session_type:Optional[str] = None):
     """Create a new terminal session."""
-    logger.info(f"Creating new session: profile={profile}, name={name}")
 
-    session: Optional[TerminalSession] = await terminal_manager.create_session(profile_name=profile, name=name)
+    config = get_config()
+
+    if session_type is not None:
+        if session_type not in ['tmux', 'screen']:
+            raise HTTPException(status_code=503, detail="Session type %s not available, please specify either 'tmux' or 'screen'" % session_type)
+    else:
+        session_type = config.get_session_manager_config().get('mode', None)
+        if not session_type:
+            raise HTTPException(status_code=503, detail="No default session mode specified in config. Config path: session_manager.mode")
+        
+    logger.info(f"Creating new session: profile={profile}, name={name}, session_type={session_type}")
+
+    if not terminal_manager:
+        logger.error("[Server] Terminal manager not available")
+        raise HTTPException(status_code=503, detail="Terminal manager not available")
+
+    session: Optional[TerminalSession] = await terminal_manager.create_session(profile_name=profile, name=name, session_type=session_type)
+
+    if not session:
+        logger.error("[Server] Cannot create new session")
+        raise HTTPException(status_code=503, detail="Cannot create new session")
+
     session_name = name or f"Terminal {session.session_id}"
     # update db?
 
@@ -558,12 +588,24 @@ def check_socket_present(session_uuid:str, session_type:str) -> bool:
 @app.get("/api/sessions/{session_uuid}")
 async def get_session(session_uuid: str):
     """Get session details."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
     loop = asyncio.get_event_loop()
     socket_present = await loop.run_in_executor(None, check_socket_present, session.uuid, session.session_type)
+    session_is_running = False
+    term_sess = terminal_manager.get_session(session.uuid)
+    if term_sess:
+        term_sess_sess = term_sess._session
+        if term_sess_sess:
+            session_is_running = await term_sess_sess._is_running()
     return {
         "id": session.id,
         "uuid": session.uuid,
@@ -572,6 +614,7 @@ async def get_session(session_uuid: str):
         "created_at": session.created_at.isoformat(),
         "status": session.status,
         "last_cwd": session.last_cwd,
+        "is_running": session_is_running,
         "session_type": session.session_type, # tmux or screen
         "socket_present": socket_present, # check if socket of this session is present?
     }
@@ -580,6 +623,12 @@ async def get_session(session_uuid: str):
 @app.put("/api/sessions/{session_uuid}")
 async def update_session(session_uuid: str, name: str):
     """Update session (rename)."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -591,6 +640,12 @@ async def update_session(session_uuid: str, name: str):
 @app.delete("/api/sessions/{session_uuid}")
 async def delete_session(session_uuid: str):
     """Delete a session."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -603,6 +658,15 @@ async def delete_session(session_uuid: str):
 @app.post("/api/sessions/{session_uuid}/revive")
 async def revive_session(session_uuid: str):
     """Restore an archived session."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
+
     logger.debug("[Server] Reviving session: %s" % session_uuid)
 
     db_session = await db.get_session_by_uuid(session_uuid)
@@ -650,7 +714,17 @@ async def restore_session(session_uuid: str):
     """Restore an archived session."""
     logger.debug("[Server] Restoring session: %s" % session_uuid)
 
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
+    
     db_session = await db.get_session_by_uuid(session_uuid)
+
     session_name = db_session.name if db_session else "Unknown"
 
     # stop all running session matching this uuid
@@ -703,6 +777,15 @@ async def list_profiles():
 @log_function(Logger.DEBUG)
 async def search(request: SearchRequest):
     """Search terminal history."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
+    
     logger.info(f"[Server] Search request: query={request.query[:50]}..., mode={request.mode}, scope={request.scope}")
 
     if not search_engine:
@@ -751,6 +834,15 @@ async def get_history(
     to_seq: Optional[int] = None,
 ):
     """Get terminal history for a session."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
+    
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -773,6 +865,14 @@ async def get_history(
 @app.get("/api/screenshots/{session_uuid}")
 async def list_screenshots(session_uuid: str, limit: int = 100):
     """List screenshots for a session."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
     session = await db.get_session_by_uuid(session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -799,7 +899,7 @@ async def run_retention():
     if not retention_manager:
         raise HTTPException(status_code=503, detail="Retention not enabled")
 
-    retention_manager.run_cleanup()
+    await retention_manager.run_cleanup()
     return {"success": True}
 
 
@@ -813,6 +913,14 @@ async def get_captures_timeline(
 ):
     """Get terminal captures for timeline view."""
     logger.debug(f"[Server] Timeline request: before={before_time}, around={around_time}, limit={limit}")
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
 
     captures = await db.get_terminal_captures_timeline(
         before_time=before_time,
@@ -822,10 +930,18 @@ async def get_captures_timeline(
 
     # Get total count
     async with db._connect() as conn:
-        total = await((await conn.execute("SELECT COUNT(*) FROM terminal_captures")).fetchone())[0]
-        oldest = (await (await conn.execute(
+        _total_row = (await(await conn.execute("SELECT COUNT(*) FROM terminal_captures")).fetchone())
+        if _total_row:
+            total = _total_row[0]
+        else:
+            total=None
+        _oldest_row = (await (await conn.execute(
             "SELECT MIN(strftime('%s', timestamp)) FROM terminal_captures"
-        )).fetchone())[0]
+        )).fetchone())
+        if _oldest_row:
+            oldest = _oldest_row[0]
+        else:
+            oldest=None
 
     # Format results
     formatted = []
@@ -853,6 +969,15 @@ async def get_captures_timeline(
 @app.get("/api/v1/captures/by-id/{capture_id}")
 async def get_capture_detail(capture_id: int):
     """Get detailed information about a single capture."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
+
     capture = await db.get_terminal_capture_by_id(capture_id)
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found")
@@ -879,6 +1004,14 @@ async def get_capture_neighbors(
     after: int = Query(5, ge=0, le=20),
 ):
     """Get neighboring captures for timeline context."""
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
     neighbors = await db.get_terminal_capture_neighbors(capture_id, before=before, after=after)
 
     formatted = []
@@ -917,7 +1050,14 @@ async def get_capture_neighbors(
 async def get_capture_screenshot(capture_id: int):
     """Serve a capture screenshot."""
     from fastapi.responses import FileResponse
+    if not db:
+        raise HTTPException(status_code=500, detail="DB not initialized")
 
+    if not terminal_manager:
+        raise HTTPException(status_code=500, detail="Terminal manager not initialized")
+
+    if not ws_handler:
+        raise HTTPException(status_code=500, detail="Websocket handler not initialized")
     capture = await db.get_terminal_capture_by_id(capture_id)
     if not capture or not capture.get("screenshot_path"):
         raise HTTPException(status_code=404, detail="Screenshot not found")

@@ -543,6 +543,9 @@ class App {
     }
 
     closeTab(tab) {
+        // hide tab preview, prevent glitch
+        this.hideTabPreview();
+
         FrontendLogger.info(`Closing tab: uuid=${tab.uuid}`);
 
         // Find index of the tab
