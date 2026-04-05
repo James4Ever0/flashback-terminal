@@ -134,7 +134,8 @@ class TerminalTab {
                 if (!isBackendHealthy) {
                     // Backend is down, likely network issue
                     FrontendLogger.warn('Backend healthcheck failed - possible network issue');
-                    // TODO: Show reconnect notification when backend is back, run infinite loop for waiting terminal back on line?
+                    // Show reconnect notification when backend is back, run infinite loop for waiting terminal back on line
+                    this?.app?.waitForBackendAndReload();
                     return;
                 }
 
@@ -1480,6 +1481,63 @@ class App {
     showError(message) {
         // Show error message (you can implement this as needed)
         alert(message); // Simple implementation, you might want to use a better UI
+    }
+
+    showReconnectNotification() {
+        // Check if reconnect modal already exists and is visible
+        const reconnectModal = document.getElementById('reconnect-modal');
+        if (reconnectModal && !reconnectModal.classList.contains('hidden')) {
+            return; // Already showing
+        }
+
+        // Show reconnect modal
+        if (reconnectModal) {
+            reconnectModal.classList.remove('hidden');
+            FrontendLogger.info('Showing reconnect notification');
+        }
+    }
+
+    hideReconnectNotification() {
+        const reconnectModal = document.getElementById('reconnect-modal');
+        if (reconnectModal) {
+            reconnectModal.classList.add('hidden');
+            FrontendLogger.info('Hiding reconnect notification');
+        }
+    }
+
+    async waitForBackendAndReload() {
+        FrontendLogger.info('Starting to wait for backend to come back online');
+        
+        const checkBackend = async () => {
+            try {
+                const response = await fetch('/healthcheck');
+                if (response.ok) {
+                    FrontendLogger.info('Backend is back online - reloading page');
+                    this.hideReconnectNotification();
+                    window.location.reload();
+                    return true;
+                }
+            } catch (error) {
+                // Backend still not available
+            }
+            return false;
+        };
+
+        // Check immediately first
+        if (await checkBackend()) {
+            return;
+        }
+
+        // Show reconnect notification
+        this.showReconnectNotification();
+
+        // Then check every 2 seconds
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (await checkBackend()) {
+                break;
+            }
+        }
     }
 }
 
