@@ -191,6 +191,12 @@ class CaptureWorker:
                 screenshot_path = await loop.run_in_executor(None, self._render_screenshot,
                     session_id, db_session.id, capture.ansi, cols, rows
                 )
+            elif capture.text and self._has_renderer:
+                loop = asyncio.get_event_loop()
+                screenshot_path = await loop.run_in_executor(None, self._render_screenshot,
+                    session_id, db_session.id, capture.text, cols, rows
+                )
+                # render text as well, we are testing screen.
 
             # Save text content (OCR result)
             text_content = capture.text
