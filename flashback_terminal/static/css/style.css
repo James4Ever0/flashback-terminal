@@ -49,6 +49,8 @@ body {
     white-space: nowrap; /* Prevent tabs from wrapping to new lines */
     scrollbar-width: thin; /* Thin scrollbar for Firefox */
     -webkit-overflow-scrolling: touch; /* Smooth scrolling for iOS */
+    margin-right: 16px; /* Add margin between tabs and toolbar buttons */
+    border-radius: 4px 4px 0 0; /* Rounded corners matching tab style */
 }
 
 #tabs::-webkit-scrollbar {
