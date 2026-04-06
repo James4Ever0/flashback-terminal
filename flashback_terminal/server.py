@@ -908,11 +908,12 @@ async def run_retention():
 @log_function(Logger.DEBUG)
 async def get_captures_timeline(
     before_time: Optional[float] = None,
+    after_time: Optional[float] = None,
     around_time: Optional[float] = None,
     limit: int = Query(50, ge=1, le=200),
 ):
     """Get terminal captures for timeline view."""
-    logger.debug(f"[Server] Timeline request: before={before_time}, around={around_time}, limit={limit}")
+    logger.debug(f"[Server] Timeline request: before={before_time}, after_time={after_time}, around={around_time}, limit={limit}")
     if not db:
         raise HTTPException(status_code=500, detail="DB not initialized")
 
@@ -951,8 +952,11 @@ async def get_captures_timeline(
             "session_id": c["session_id"],
             "session_uuid": c["session_uuid"],
             "session_name": c["session_name"],
-            "timestamp": c["timestamp"],
-            "timestamp_formatted": c["timestamp"],
+            "timestamp_unix": int(c["timestamp_unix"]),
+            "timestamp": c['timestamp_formatted_local'], # for compatibility to frontend.
+            "timestamp_formatted": c['timestamp_formatted_local'],
+            # "timestamp": c["timestamp"],
+            # "timestamp_formatted": c["timestamp"],
             "screenshot_url": f"/api/v1/captures/{c['id']}/screenshot" if c["screenshot_path"] else None,
             "ocr_text_preview": (c["text_content"] or "")[:200] if c["text_content"] else None,
         })
@@ -961,8 +965,12 @@ async def get_captures_timeline(
         "results": formatted,
         "total": total,
         "oldest_timestamp": float(oldest) if oldest else None,
-        "time_from": captures[-1]["timestamp"] if captures else None,
-        "time_to": captures[0]["timestamp"] if captures else None,
+        "time_from": captures[-1]["timestamp_formatted_local"] if captures else None,
+        "time_to": captures[0]["timestamp_formatted_local"] if captures else None,
+        # "timezone": ..., # get timezone info? or use a specific api instead? or just use frontend api?
+        # "debug": {
+        #     "captures":captures,
+        # },
     }
 
 
@@ -1036,8 +1044,11 @@ async def get_capture_neighbors(
 
         formatted.append({
             "id": n["id"],
-            "timestamp": n["timestamp"],
-            "timestamp_formatted": n["timestamp"],
+            "timestamp": n["timestamp_formatted_local"],
+            "timestamp_formatted": n["timestamp_formatted_local"],
+            "timestamp_formatted_utc": n["timestamp"],
+            "timestamp_unix": n["timestamp_unix"],
+            "timestamp_formatted_local": n['timestamp_formatted_local'],
             "screenshot_url": f"/api/v1/captures/{n['id']}/screenshot" if n["screenshot_path"] else None,
             "is_center": n.get("is_center", False),
             "relative_minutes": rel_minutes,
