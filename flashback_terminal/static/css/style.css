@@ -42,6 +42,30 @@ body {
     display: flex;
     gap: 4px;
     user-select: none; /* Prevent text selection during drag */
+    flex: 1;
+    min-width: 0; /* Allow flex item to shrink below content size */
+    overflow-x: auto; /* Enable horizontal scrolling when needed */
+    overflow-y: hidden; /* Hide vertical scrollbar */
+    white-space: nowrap; /* Prevent tabs from wrapping to new lines */
+    scrollbar-width: thin; /* Thin scrollbar for Firefox */
+    -webkit-overflow-scrolling: touch; /* Smooth scrolling for iOS */
+}
+
+#tabs::-webkit-scrollbar {
+    height: 6px; /* Thin horizontal scrollbar for Chrome/Safari */
+}
+
+#tabs::-webkit-scrollbar-track {
+    background: #333;
+}
+
+#tabs::-webkit-scrollbar-thumb {
+    background: #666;
+    border-radius: 3px;
+}
+
+#tabs::-webkit-scrollbar-thumb:hover {
+    background: #888;
 }
 
 .tab {

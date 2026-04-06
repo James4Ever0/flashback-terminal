@@ -825,10 +825,15 @@ class App {
     renderTabs() {
         const container = document.getElementById('tabs');
         container.innerHTML = ''; // clear all tabs? could be inefficient?
+        var tabElToFocus = null;
 
         for (let i = 0; i < this.tabs.length; i++) {
             const tab = this.tabs[i];
             const tabEl = document.createElement('div');
+            const isActiveTab = tab === this.activeTab;
+            if (isActiveTab){
+                tabElToFocus = tabEl;
+            }
             tabEl.className = 'tab' + (tab === this.activeTab ? ' active' : '');
             tabEl.draggable = true;
             tabEl.dataset.tabIndex = i;
@@ -871,6 +876,13 @@ class App {
             tabEl.appendChild(tabContent);
             tabEl.appendChild(closeBtn);
             container.appendChild(tabEl);
+        }
+        if (tabElToFocus){
+            tabElToFocus.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
         }
     }
 
