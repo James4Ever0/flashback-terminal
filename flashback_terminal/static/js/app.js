@@ -311,6 +311,7 @@ class App {
         this.previewTimeout = null;
         this.currentPreviewTab = null;
         this.draggedTab = null;
+        this.inTabsDiv = false;
     }
 
     saveTabState() {
@@ -476,7 +477,14 @@ class App {
         });
         document.getElementById('btn-search').addEventListener('click', () => this.openSearch());
         document.getElementById('btn-sessions').addEventListener('click', () => this.openSessions());
+
         document.getElementById('btn-timeline').addEventListener('click', () => this.openTimeline());
+
+        document.getElementById('search-result-timeline').addEventListener('click', () => this.openSearchResultTimeline());
+        document.getElementById('search-result-detail').addEventListener('click', () => this.openSearchResultDetail());
+
+        document.getElementById('tabs').addEventListener('mouseenter', () => this.enterTabsDiv());
+        document.getElementById('tabs').addEventListener('mouseleave', () => this.leaveTabsDiv());
 
         document.querySelectorAll('.close-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -706,6 +714,7 @@ class App {
         this.previewTimeout = setTimeout(() => {
             // Don't show preview if this is the active tab
             if (tab === this.activeTab) {
+                this.activeTab.terminal.element.style.display = 'block';
                 return;
             }
 
@@ -769,7 +778,16 @@ class App {
 
             // scroll to xterm-cursor.
             // this.scrollToLastHighlight(previewContainer, "xterm-cursor");
-        }, 500); // 500ms delay
+        }, 0); // 500ms delay
+    }
+
+    enterTabsDiv() {
+        this.inTabsDiv = true;
+    }
+
+    leaveTabsDiv() {
+        this.inTabsDiv = false;
+        this.hideTabPreview();
     }
 
     hideTabPreview() {
@@ -780,25 +798,27 @@ class App {
         }
 
         if (this.activeTab) {
-            this.activeTab.terminal.element.style.display = 'block';
+            if (this.inTabsDiv){
+                FrontendLogger.info("Mouse within tabs div, no need to redisplay active tab.")
+            } else{
+                this.activeTab.terminal.element.style.display = 'block';
+            }
         }
 
         if (this.currentPreviewTab){
             if (this.draggedTab){
                 FrontendLogger.info("Skip hiding preview tab since it is being dragged");
-            }else{
+            }else if (this.activeTab === this.currentPreviewTab){
+                FrontendLogger.info("Skip hiding preview tab since it is the current active tab")
+            }
+            else {
                 this.currentPreviewTab.terminal.focus();
                 this.currentPreviewTab.terminal.element.style.display = "none";
             }
         }
 
-        // Hide existing preview
-        // const previewContainer = document.getElementById('tab-preview');
-        // if (previewContainer) {
-        //     previewContainer.style.display = 'none';
-        // }
-
         this.currentPreviewTab = null;
+
         FrontendLogger.debug('Hiding tab preview');
     }
 
@@ -949,8 +969,6 @@ class App {
             sessions_map[it.uuid] = it;
         }
 
-        console.log("sessions map", sessions_map);
-
         // Group results by session UUID and title
         const groupedResults = {};
         results.forEach(r => {
@@ -1009,7 +1027,7 @@ class App {
                     <div class="timestamp-tab" 
                          onmouseenter="app.showSearchPreview('${r.session_uuid}', '${r.timestamp}', this)"
                          onmouseleave="app.hideSearchPreview()"
-                         onclick="app.showExpandedPreview('${r.session_uuid}', '${r.timestamp}', this)"
+                         onclick="app.showExpandedPreview(this, '${r.session_uuid}', '${r.timestamp}', '${r.capture_id}')"
                          data-timestamp="${r.timestamp}"
                          data-content="${encodedContent}">
                         <span class="timestamp-text">${timestamp}</span>
@@ -1109,8 +1127,13 @@ class App {
         }
     }
 
-    showExpandedPreview(sessionUuid, timestamp, element) {
+    showExpandedPreview(element, sessionUuid, timestamp, captureId) {
         const modal = document.getElementById('expanded-preview-modal');
+
+        modal.setAttribute("data-capture-id", captureId);
+        modal.setAttribute("data-session-uuid", sessionUuid);
+        modal.setAttribute("data-timestamp", timestamp);
+
         const previewBody = document.getElementById('expanded-preview-body');
         const encodedContent = element.getAttribute('data-content');
         
@@ -1153,6 +1176,11 @@ class App {
         const modal = document.getElementById('expanded-preview-modal');
         if (modal) {
             modal.classList.add('hidden');
+
+            modal.removeAttribute("data-capture-id");
+            modal.removeAttribute("data-session-uuid");
+            modal.removeAttribute("data-timestamp");
+
             // Remove escape key listener
             document.removeEventListener('keydown', this.handleEscapeKey);
         }
@@ -1249,6 +1277,28 @@ class App {
         await this.loadSessions();
     }
 
+    openSearchResultDetail() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+
+            let capture_id = modal.getAttribute("data-capture-id");
+            window.open(`/capture/${capture_id}`, '_blank');
+        }
+    }
+
+    openSearchResultTimeline() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+
+            let uuid = modal.getAttribute("data-session-uuid");
+            let timestamp = modal.getAttribute("data-timestamp"); // result: "2026-04-05 14:57:21"
+            // to be used? we need to convert it to float or something? or just use it as is?
+            this.openTimeline({uuid, timestamp});
+        }
+    }
+
     openTimeline(options) {
         let url = "/timeline";
         let uuid = options? options.uuid : null;
@@ -1257,11 +1307,11 @@ class App {
         let query_params = [];
 
         if (uuid) {
-            query_params.push("uuid="+uuid);
+            query_params.push("uuid="+encodeURIComponent(uuid));
         }
 
         if (timestamp) {
-            query_params.push("timestamp="+timestamp);
+            query_params.push("timestamp="+encodeURIComponent(timestamp));
         }
 
         if (query_params.length > 0){
