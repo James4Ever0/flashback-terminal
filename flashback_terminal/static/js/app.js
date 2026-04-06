@@ -254,7 +254,9 @@ class TerminalTab {
     }
 
     focus() {
-        this.terminal.focus();
+        if (this.terminal){
+            this.terminal.focus();
+        }
     }
 
     handleTitleChange(title) {
@@ -312,6 +314,7 @@ class App {
         this.currentPreviewTab = null;
         this.draggedTab = null;
         this.inTabsDiv = false;
+        this.activeTabEl = null;
     }
 
     saveTabState() {
@@ -486,11 +489,16 @@ class App {
         document.getElementById('tabs').addEventListener('mouseenter', () => this.enterTabsDiv());
         document.getElementById('tabs').addEventListener('mouseleave', () => this.leaveTabsDiv());
 
-        document.querySelectorAll('.close-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.target.closest('.modal').classList.add('hidden');
-            });
-        });
+        document.getElementById('search-modal-close').addEventListener('click', () => this.closeSearchModal());
+
+        document.getElementById('sessions-modal-close').addEventListener('click', () => this.closeSessionsModal());
+
+        // TODO: maybe we need to rewrite this?
+        // document.querySelectorAll('.close-btn').forEach(btn => {
+        //     btn.addEventListener('click', (e) => {
+        //         e.target.closest('.modal').classList.add('hidden');
+        //     });
+        // });
 
         document.getElementById('btn-do-search').addEventListener('click', () => this.doSearch());
         
@@ -524,6 +532,16 @@ class App {
             this.saveTabState(); // Save state after title change
         } else {
             FrontendLogger.warn('Empty title provided, ignoring');
+        }
+        if (this.activeTab.terminal){
+            this.activeTab.terminal.focus();
+        }
+        if (this.activeTabEl){
+            this.activeTabEl.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
         }
     }
 
@@ -714,70 +732,36 @@ class App {
         this.previewTimeout = setTimeout(() => {
             // Don't show preview if this is the active tab
             if (tab === this.activeTab) {
-                this.activeTab.terminal.element.style.display = 'block';
+                for (let _tab of this.tabs){
+                    if (_tab === this.activeTab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
                 return;
             }
 
             this.currentPreviewTab = tab;
 
-            // Create or get preview container
-            // let previewContainer = document.getElementById('tab-preview');
-            // if (!previewContainer) {
-            //     previewContainer = document.createElement('div');
-            //     previewContainer.id = 'tab-preview';
-            //     previewContainer.className = 'tab-preview';
-            //     document.body.appendChild(previewContainer);
+            // if (this.activeTab) {
+            //     this.activeTab.terminal.element.style.display = 'none';
             // }
-
-            // Force render terminal content even when not focused for tab preview
-            // This ensures the preview shows up-to-date terminal content
-
-
-            if (this.activeTab) {
-                this.activeTab.terminal.element.style.display = 'none';
-            }
 
             if (tab.terminal){
-                tab.terminal.element.style.display = "block";
-                tab.terminal.focus();
+                for (let _tab of this.tabs){
+                    if (_tab === tab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
             }
-
-            // if (tab.terminal){
-            //     let _element = tab.terminal.element;
-            //     let _element_display = _element.style.display;
-            //     _element.style.display = '';
-            //     _element.offsetHeight;
-            //     _element.style.display = 'none';
-            //     _element.offsetHeight;
-            //     _element.style.display = _element_display;
-            // }
-            // Clone the terminal content for preview
-            // const terminalElement = tab.terminal.element;
-            // const previewContent = terminalElement.cloneNode(true);
-            // previewContent.style.display = 'block';
-            // previewContent.style.position = 'static';
-            // previewContent.style.height = '400px';
-            // previewContent.style.overflow = 'hidden';
-
-            // // Clear preview container and add content
-            // previewContainer.innerHTML = '';
-            // previewContainer.appendChild(previewContent);
-
-            // // Position preview relative to the terminal container
-            // const terminalContainer = document.getElementById('terminal-container');
-            // const containerRect = terminalContainer.getBoundingClientRect();
-
-            // previewContainer.style.position = 'fixed';
-            // previewContainer.style.top = `${containerRect.top + 20}px`;
-            // previewContainer.style.left = `${containerRect.left + 20}px`;
-            // previewContainer.style.width = `${containerRect.width - 40}px`;
-            // previewContainer.style.zIndex = '1000';
-            // previewContainer.style.display = 'block';
 
             FrontendLogger.debug(`Showing preview for tab: ${tab.name}`);
 
-            // scroll to xterm-cursor.
-            // this.scrollToLastHighlight(previewContainer, "xterm-cursor");
         }, 0); // 500ms delay
     }
 
@@ -800,8 +784,16 @@ class App {
         if (this.activeTab) {
             if (this.inTabsDiv){
                 FrontendLogger.info("Mouse within tabs div, no need to redisplay active tab.")
+                return
             } else{
-                this.activeTab.terminal.element.style.display = 'block';
+                for (let _tab of this.tabs){
+                    if (_tab === this.activeTab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
             }
         }
 
@@ -812,7 +804,6 @@ class App {
                 FrontendLogger.info("Skip hiding preview tab since it is the current active tab")
             }
             else {
-                this.currentPreviewTab.terminal.focus();
                 this.currentPreviewTab.terminal.element.style.display = "none";
             }
         }
@@ -878,6 +869,7 @@ class App {
             container.appendChild(tabEl);
         }
         if (tabElToFocus){
+            this.activeTabEl = tabElToFocus;
             tabElToFocus.scrollIntoView({
                 behavior: 'smooth',
                 block: 'center',
@@ -1282,6 +1274,10 @@ class App {
             // Remove escape key listener
             document.removeEventListener('keydown', this.handleEscapeKey);
         }
+
+        if (this.activeTab){
+            this.activeTab.focus();
+        }
     }
 
     async openSessions() {
@@ -1614,6 +1610,9 @@ class App {
     closeSessionsModal() {
         if (!document.getElementById('sessions-modal').classList.contains('hidden')) {
             document.getElementById('sessions-modal').classList.add('hidden');
+        }
+        if (this.activeTab){
+            this.activeTab.focus();
         }
     }
 
