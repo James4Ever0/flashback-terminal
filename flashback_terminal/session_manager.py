@@ -345,8 +345,8 @@ set -g default-terminal "screen-256color"
                 env=env,
             )
             stdout, stderr = await process.communicate(input)
-            logger.debug("[TmuxSession] Process stdout:\n%s"%stdout)
-            logger.debug("[TmuxSession] Process stderr:\n%s"%stderr)
+            logger.debug("[TmuxSession] Process stdout:\n%s"% stdout)
+            logger.debug("[TmuxSession] Process stderr:\n%s"% stderr)
         else:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1307,12 +1307,15 @@ class SessionManager:
         session_id: str,
         name: str,
         profile: Dict[str, Any],
-        on_output: Optional[Callable[[str], None]] = None,
+        mode:Optional[str] = None,
+        on_output: Optional[Callable[[str], Coroutine]] = None,
         on_clear: Optional[Callable[[], None]] = None,
         on_cursor: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[BaseSession]:
         """Create a new session based on configured mode."""
-        mode = self.config.session_manager_mode
+        if not mode:
+            mode = self.config.session_manager_mode
+
         logger.info(f"Creating session with mode '{mode}': {session_id}")
 
         if mode == "tmux":

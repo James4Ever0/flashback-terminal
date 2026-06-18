@@ -90,6 +90,7 @@ class TerminalTab {
             },
             cursorBlink: true,
             convertEol: true
+            // forceRender: true
         });
 
         this.fitAddon = new FitAddon.FitAddon();
@@ -103,7 +104,7 @@ class TerminalTab {
         this.socket = new WebSocket(wsUrl);
 
         this.socket.onopen = () => {
-            FrontendLogger.info(`WebSocket connected: uuid=${this.uuid}`);
+            FrontendLogger.info(`[Terminal ${this.uuid}] WebSocket connected: uuid=${this.uuid}`);
             // this.startScreenshotCapture();
             // resize terminal initially.
             this.fitAddon.fit();
@@ -111,7 +112,7 @@ class TerminalTab {
         };
 
         this.socket.onmessage = (event) => {
-            FrontendLogger.trace('WebSocket message received:', event.data.substring(0, 200));
+            FrontendLogger.trace(`[Terminal ${this.uuid}] WebSocket message received:`, event.data.substring(0, 200));
             const msg = JSON.parse(event.data);
             this.handleMessage(msg);
         };
@@ -121,13 +122,21 @@ class TerminalTab {
 
             // Check backend health first
             try {
-                const healthResponse = await fetch('/healthcheck');
-                const isBackendHealthy = healthResponse.ok;
+                var isBackendHealthy=false;
+                try{
+                    const healthResponse = await fetch('/healthcheck');
+                    isBackendHealthy = healthResponse.ok;
+
+                } catch {
+                    // cannot connect to backend, so the backend is not running. waiting for reconnect.
+                    FrontendLogger.info("Healthcheck failed, likely server close.")
+                }
 
                 if (!isBackendHealthy) {
                     // Backend is down, likely network issue
                     FrontendLogger.warn('Backend healthcheck failed - possible network issue');
-                    // TODO: Show reconnect notification when backend is back
+                    // Show reconnect notification when backend is back, run infinite loop for waiting terminal back on line
+                    this?.app?.waitForBackendAndReload();
                     return;
                 }
 
@@ -244,43 +253,10 @@ class TerminalTab {
         }
     }
 
-    // startScreenshotCapture() {
-    //     const interval = 10000;
-    //     this.screenshotInterval = setInterval(() => {
-    //         this.captureAndUpload();
-    //     }, interval);
-    // }
-
-    // stopScreenshotCapture() {
-    //     if (this.screenshotInterval) {
-    //         clearInterval(this.screenshotInterval);
-    //         this.screenshotInterval = null;
-    //     }
-    // }
-
-    // captureAndUpload() {
-    //     const canvas = this.terminal.element.querySelector('canvas');
-    //     if (!canvas) return;
-
-    //     canvas.toBlob((blob) => {
-    //         const reader = new FileReader();
-    //         reader.onloadend = () => {
-    //             const base64data = reader.result;
-    //             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-    //                 this.socket.send(JSON.stringify({
-    //                     type: 'command',
-    //                     cmd: 'screenshot_upload',
-    //                     timestamp: new Date().toISOString(),
-    //                     data: base64data
-    //                 }));
-    //             }
-    //         };
-    //         reader.readAsDataURL(blob);
-    //     }, 'image/png');
-    // }
-
     focus() {
-        this.terminal.focus();
+        if (this.terminal){
+            this.terminal.focus();
+        }
     }
 
     handleTitleChange(title) {
@@ -336,6 +312,9 @@ class App {
         this.STORAGE_KEY = 'flashback-terminal-tabs';
         this.previewTimeout = null;
         this.currentPreviewTab = null;
+        this.draggedTab = null;
+        this.inTabsDiv = false;
+        this.activeTabEl = null;
     }
 
     saveTabState() {
@@ -381,57 +360,114 @@ class App {
 
         FrontendLogger.info(`Restoring ${savedState.tabs.length} tabs from saved state`);
 
+
+        // Create a map of UUID to target position from saved state
+        const uuidToTargetIndex = new Map();
+        savedState.tabs.forEach((savedTab, index) => {
+            uuidToTargetIndex.set(savedTab.uuid, index);
+        });
+
+        // console.log("UUID to target index:");
+        // console.dir(uuidToTargetIndex);
+
         const restoredTabs = [];
         let activeTabRestored = null;
 
-        for (const savedTab of savedState.tabs) {
-            try {
-                // Try to attach to existing session
-                const response = await fetch(`/api/sessions/${savedTab.uuid}/attach`, {
-                    method: 'POST'
-                });
+        try {
+            // Show progress overlay
+            this.showRestoreProgress(savedState.tabs.length);
 
-                if (response.ok) {
-                    const result = await response.json();
-                    FrontendLogger.info(`Successfully restored tab: ${savedTab.name} (${savedTab.uuid})`);
+            // Create restoration tasks for all tabs
+            let completedCount = 0;
+            const restorationTasks = savedState.tabs.map(async (savedTab, index) => {
+                try {
+                    // Try to attach to existing session
+                    const response = await fetch(`/api/sessions/${savedTab.uuid}/attach`, {
+                        method: 'POST'
+                    });
 
-                    // Create tab instance
-                    const tab = new TerminalTab(result.uuid, result.name);
-                    tab.originalName = savedTab.originalName;
-                    tab.titleOverride = savedTab.titleOverride;
-                    tab.app = this;
+                    if (response.ok) {
+                        const result = await response.json();
+                        FrontendLogger.info(`Successfully restored tab: ${savedTab.name} (${savedTab.uuid})`);
 
-                    this.tabs.push(tab);
-                    await tab.connect();
-                    restoredTabs.push(tab);
+                        // Create tab instance
+                        const tab = new TerminalTab(result.uuid, result.name);
+                        tab.originalName = savedTab.originalName;
+                        tab.titleOverride = savedTab.titleOverride;
+                        tab.app = this;
 
-                    // Set as active tab if it was the active one
-                    if (savedTab.uuid === savedState.activeTabUuid) {
-                        activeTabRestored = tab;
+                        this.tabs.push(tab);
+                        await tab.connect();
+
+                        // Update progress when this tab completes
+                        completedCount++;
+                        this.updateRestoreProgress(completedCount, savedState.tabs.length);
+
+                        // Set as active tab if it was the active one
+                        if (savedTab.uuid === savedState.activeTabUuid) {
+                            return { tab, isActive: true };
+                        }
+                        return { tab, isActive: false };
+                    } else {
+                        FrontendLogger.warn(`Failed to restore tab: ${savedTab.name} (${savedTab.uuid}) - session may not be available`);
+                        // Update progress even for failed tabs
+                        completedCount++;
+                        this.updateRestoreProgress(completedCount, savedState.tabs.length);
+                        return null;
                     }
-                } else {
-                    FrontendLogger.warn(`Failed to restore tab: ${savedTab.name} (${savedTab.uuid}) - session may not be available`);
+                } catch (error) {
+                    FrontendLogger.error(`Error restoring tab ${savedTab.name}:`, error);
+                    // Update progress even for errored tabs
+                    completedCount++;
+                    this.updateRestoreProgress(completedCount, savedState.tabs.length);
+                    return null;
                 }
-            } catch (error) {
-                FrontendLogger.error(`Error restoring tab ${savedTab.name}:`, error);
-            }
-        }
+            });
 
-        // Switch to the previously active tab, or the first restored tab
-        if (restoredTabs.length > 0) {
-            const tabToSwitch = activeTabRestored || restoredTabs[0];
-            this.switchTab(tabToSwitch);
+            // Execute all restoration tasks concurrently
+            const results = await Promise.all(restorationTasks);
+
+            // Reorder tabs according to saved state order
+            this.reorderTabsBySavedState(uuidToTargetIndex);
+
+            // Process results
+            const restoredTabs = [];
+            let activeTabRestored = null;
+
+            for (const result of results) {
+                if (result) {
+                    restoredTabs.push(result.tab);
+                    this.switchTab(result.tab);
+                    if (result.isActive) {
+                        activeTabRestored = result.tab;
+                    }
+                }
+            }
+
+            // Switch to the previously active tab, or the first restored tab
+            if (restoredTabs.length > 0) {
+                const tabToSwitch = activeTabRestored || restoredTabs[0];
+                this.switchTab(tabToSwitch);
+                FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
+            } else {
+                FrontendLogger.warn('No tabs could be restored');
+                this.clearSavedTabState(); // Clear invalid state
+            }
+        } catch (error) {
+            FrontendLogger.error('Unexpected error during tab restoration:', error);
+        } finally {
+            // Ensure progress overlay is hidden no matter what happens
+            this.hideRestoreProgress();
             this.renderTabs();
-            FrontendLogger.info(`Tab restoration complete: ${restoredTabs.length} tabs restored`);
-        } else {
-            FrontendLogger.warn('No tabs could be restored');
-            this.clearSavedTabState(); // Clear invalid state
         }
     }
 
     async init() {
         FrontendLogger.info('App initializing...');
         const exitLog = FrontendLogger.logFunction('App.init');
+
+        // Hide expanded preview modal on initialization
+        this.closeExpandedPreview();
 
         document.getElementById('btn-new-tab').addEventListener('click', () => {
             FrontendLogger.debug('New tab button clicked');
@@ -445,13 +481,33 @@ class App {
         document.getElementById('btn-search').addEventListener('click', () => this.openSearch());
         document.getElementById('btn-sessions').addEventListener('click', () => this.openSessions());
 
-        document.querySelectorAll('.close-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.target.closest('.modal').classList.add('hidden');
-            });
-        });
+        document.getElementById('btn-timeline').addEventListener('click', () => this.openTimeline());
+
+        document.getElementById('search-result-timeline').addEventListener('click', () => this.openSearchResultTimeline());
+        document.getElementById('search-result-detail').addEventListener('click', () => this.openSearchResultDetail());
+
+        document.getElementById('tabs').addEventListener('mouseenter', () => this.enterTabsDiv());
+        document.getElementById('tabs').addEventListener('mouseleave', () => this.leaveTabsDiv());
+
+        document.getElementById('search-modal-close').addEventListener('click', () => this.closeSearchModal());
+
+        document.getElementById('sessions-modal-close').addEventListener('click', () => this.closeSessionsModal());
+
+        // TODO: maybe we need to rewrite this?
+        // document.querySelectorAll('.close-btn').forEach(btn => {
+        //     btn.addEventListener('click', (e) => {
+        //         e.target.closest('.modal').classList.add('hidden');
+        //     });
+        // });
 
         document.getElementById('btn-do-search').addEventListener('click', () => this.doSearch());
+        
+        // Add Enter key event listener to search input
+        document.getElementById('search-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.doSearch();
+            }
+        });
 
         // TODO: only if no tab to attach (all tabs in background are not running), we would create a new one instead. otherwise attach existing ones.
         // await this.createTab();
@@ -476,6 +532,16 @@ class App {
             this.saveTabState(); // Save state after title change
         } else {
             FrontendLogger.warn('Empty title provided, ignoring');
+        }
+        if (this.activeTab.terminal){
+            this.activeTab.terminal.focus();
+        }
+        if (this.activeTabEl){
+            this.activeTabEl.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
         }
     }
 
@@ -525,6 +591,9 @@ class App {
     }
 
     closeTab(tab) {
+        // hide tab preview, prevent glitch
+        this.hideTabPreview();
+
         FrontendLogger.info(`Closing tab: uuid=${tab.uuid}`);
 
         // Find index of the tab
@@ -571,6 +640,7 @@ class App {
     handleDragStart(e, tabIndex) {
         // focus on the dragged tab first, then handle all the drag events later.
         const draggedTab = this.tabs[tabIndex];
+        this.draggedTab = draggedTab;
         if (draggedTab) {
             // Focus the terminal without re-rendering tabs to avoid disrupting drag operation
             if (this.activeTab) {
@@ -607,6 +677,7 @@ class App {
     }
 
     handleDragLeave(e) {
+        this.draggedTab = null;
         if (e.target.classList.contains('tab')) {
             e.target.classList.remove('drag-over');
         }
@@ -661,45 +732,46 @@ class App {
         this.previewTimeout = setTimeout(() => {
             // Don't show preview if this is the active tab
             if (tab === this.activeTab) {
+                for (let _tab of this.tabs){
+                    if (_tab === this.activeTab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
                 return;
             }
 
             this.currentPreviewTab = tab;
 
-            // Create or get preview container
-            let previewContainer = document.getElementById('tab-preview');
-            if (!previewContainer) {
-                previewContainer = document.createElement('div');
-                previewContainer.id = 'tab-preview';
-                previewContainer.className = 'tab-preview';
-                document.body.appendChild(previewContainer);
+            // if (this.activeTab) {
+            //     this.activeTab.terminal.element.style.display = 'none';
+            // }
+
+            if (tab.terminal){
+                for (let _tab of this.tabs){
+                    if (_tab === tab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
             }
 
-            // Clone the terminal content for preview
-            const terminalElement = tab.terminal.element;
-            const previewContent = terminalElement.cloneNode(true);
-            previewContent.style.display = 'block';
-            previewContent.style.position = 'static';
-            previewContent.style.height = '400px';
-            previewContent.style.overflow = 'hidden';
-
-            // Clear preview container and add content
-            previewContainer.innerHTML = '';
-            previewContainer.appendChild(previewContent);
-
-            // Position preview relative to the terminal container
-            const terminalContainer = document.getElementById('terminal-container');
-            const containerRect = terminalContainer.getBoundingClientRect();
-
-            previewContainer.style.position = 'fixed';
-            previewContainer.style.top = `${containerRect.top + 20}px`;
-            previewContainer.style.left = `${containerRect.left + 20}px`;
-            previewContainer.style.width = `${containerRect.width - 40}px`;
-            previewContainer.style.zIndex = '1000';
-            previewContainer.style.display = 'block';
-
             FrontendLogger.debug(`Showing preview for tab: ${tab.name}`);
-        }, 500); // 500ms delay
+
+        }, 0); // 500ms delay
+    }
+
+    enterTabsDiv() {
+        this.inTabsDiv = true;
+    }
+
+    leaveTabsDiv() {
+        this.inTabsDiv = false;
+        this.hideTabPreview();
     }
 
     hideTabPreview() {
@@ -709,23 +781,50 @@ class App {
             this.previewTimeout = null;
         }
 
-        // Hide existing preview
-        const previewContainer = document.getElementById('tab-preview');
-        if (previewContainer) {
-            previewContainer.style.display = 'none';
+        if (this.activeTab) {
+            if (this.inTabsDiv){
+                FrontendLogger.info("Mouse within tabs div, no need to redisplay active tab.")
+                return
+            } else{
+                for (let _tab of this.tabs){
+                    if (_tab === this.activeTab){
+                        _tab.terminal.element.style.display = 'block';
+                        _tab.terminal.focus();
+                    } else {
+                        _tab.terminal.element.style.display = 'none';
+                    }
+                }
+            }
+        }
+
+        if (this.currentPreviewTab){
+            if (this.draggedTab){
+                FrontendLogger.info("Skip hiding preview tab since it is being dragged");
+            }else if (this.activeTab === this.currentPreviewTab){
+                FrontendLogger.info("Skip hiding preview tab since it is the current active tab")
+            }
+            else {
+                this.currentPreviewTab.terminal.element.style.display = "none";
+            }
         }
 
         this.currentPreviewTab = null;
+
         FrontendLogger.debug('Hiding tab preview');
     }
 
     renderTabs() {
         const container = document.getElementById('tabs');
-        container.innerHTML = '';
+        container.innerHTML = ''; // clear all tabs? could be inefficient?
+        var tabElToFocus = null;
 
         for (let i = 0; i < this.tabs.length; i++) {
             const tab = this.tabs[i];
             const tabEl = document.createElement('div');
+            const isActiveTab = tab === this.activeTab;
+            if (isActiveTab){
+                tabElToFocus = tabEl;
+            }
             tabEl.className = 'tab' + (tab === this.activeTab ? ' active' : '');
             tabEl.draggable = true;
             tabEl.dataset.tabIndex = i;
@@ -769,9 +868,20 @@ class App {
             tabEl.appendChild(closeBtn);
             container.appendChild(tabEl);
         }
+        if (tabElToFocus){
+            this.activeTabEl = tabElToFocus;
+            tabElToFocus.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+        }
     }
 
     openSearch() {
+        // Hide any expanded preview when opening search
+        this.closeExpandedPreview();
+        
         // Reset search form to pristine state
         document.getElementById('search-input').value = '';
         document.getElementById('search-results').innerHTML = '';
@@ -780,6 +890,9 @@ class App {
         
         // Show the modal
         document.getElementById('search-modal').classList.remove('hidden');
+        
+        // Add escape key listener
+        document.addEventListener('keydown', this.handleEscapeKeyForSearch);
     }
 
     async doSearch() {
@@ -860,79 +973,287 @@ class App {
             sessions_map[it.uuid] = it;
         }
 
-        console.log("sessions map", sessions_map);
+        // Group results by session UUID and title
+        const groupedResults = {};
+        results.forEach(r => {
+            const sessionKey = `${r.session_uuid}|${r.session_name}`;
+            if (!groupedResults[sessionKey]) {
+                groupedResults[sessionKey] = {
+                    session_uuid: r.session_uuid,
+                    session_name: r.session_name,
+                    session_type: r.session_type,
+                    results: []
+                };
+            }
+            groupedResults[sessionKey].results.push(r);
+        });
 
+        // Store search query for highlighting
+        this.currentSearchQuery = document.getElementById('search-input').value;
 
-        const resultsHtml = results.map(r => {
-            const isRunning = runningUuids.has(r.session_uuid);
-
-            // var buttonClass = 'jump-btn';
-            // var buttonText = "jump to terminal";
-            // var onClick = "";
+        const resultsHtml = Object.entries(groupedResults).map(([sessionKey, sessionGroup]) => {
+            const isRunning = runningUuids.has(sessionGroup.session_uuid);
+            const sess = sessions_map[sessionGroup.session_uuid];
 
             var buttonClass = isRunning ? 'jump-btn' : 'jump-btn disabled';
             var buttonText = isRunning ? 'Jump to Terminal' : 'Terminal Not Available';
-            var onClick = isRunning ? `app.jumpToTerminal('${r.session_uuid}')` : '';
+            var onClick = isRunning ? `app.jumpToTerminal('${sessionGroup.session_uuid}')` : '';
 
-            // if not in current opened tab set, at least we should get all session status?
-
-            // console.log("allSessionsData:", allSessionsData);
-            // console.log("Session uuid:", r.session_uuid);
-
-            if (buttonClass !== 'jump-btn') {
-                const sess = sessions_map[r.session_uuid];
-
-                if (sess) {
-                    // TODO: if it is attachable, socket present, then we shall attach to it. otherwise we clone it. add attribute: socket_present
-                    if (sess.socket_present) {
-
-                        const existingTab = this.tabs.find(t => t.uuid === sess.uuid);
-
-                        if (existingTab) {
-                            buttonClass = 'btn-attach';
-                            buttonText = 'Attach';
-                            onClick = `app.attachToSession('${r.session_uuid}')`;
-                        } else {
-                            buttonClass = 'btn-attach';
-                            buttonText = 'Force Attach';
-                            onClick = `app.forceAttachToSession('${r.session_uuid}')`;
-                        }
+            if (!isRunning && sess) {
+                if (sess.socket_present) {
+                    const existingTab = this.tabs.find(t => t.uuid === sess.uuid);
+                    if (existingTab) {
+                        buttonClass = 'btn-attach';
+                        buttonText = 'Attach';
+                        onClick = `app.attachToSession('${sessionGroup.session_uuid}')`;
                     } else {
-                        buttonClass = 'btn-restore';
-                        buttonText = 'Revive';
-                        onClick = `app.reviveSession('${r.session_uuid}')`;
+                        buttonClass = 'btn-attach';
+                        buttonText = 'Force Attach';
+                        onClick = `app.forceAttachToSession('${sessionGroup.session_uuid}')`;
                     }
                 } else {
-                    buttonClass = 'jump-btn disabled'
-                    buttonText = "Terminal not available"
-                    onClick = '';
+                    buttonClass = 'btn-restore';
+                    buttonText = 'Revive';
+                    onClick = `app.reviveSession('${sessionGroup.session_uuid}')`;
                 }
+            } else if (!isRunning && !sess) {
+                buttonClass = 'jump-btn disabled';
+                buttonText = "Terminal not available";
+                onClick = '';
             }
 
 
+            // Create timestamp tabs
+            const timestampTabs = sessionGroup.results.map((r, index) => {
+                const timestamp = new Date(r.timestamp).toLocaleString();
+                const encodedContent = encodeURI(r.content);
+                return `
+                    <div class="timestamp-tab" 
+                         onmouseenter="app.showSearchPreview('${r.session_uuid}', '${r.timestamp}', this)"
+                         onmouseleave="app.hideSearchPreview()"
+                         onclick="app.showExpandedPreview(this, '${r.session_uuid}', '${r.timestamp}', '${r.capture_id}')"
+                         data-timestamp="${r.timestamp}"
+                         data-content="${encodedContent}">
+                        <span class="timestamp-text">${timestamp}</span>
+                        <div class="preview-tooltip" id="preview-${r.session_uuid}-${r.timestamp}"></div>
+                    </div>
+                `;
+            }).join('');
+
             return `
-            <div class="search-result">
-                <div class="result-header">
-                    <span class="session-name">${r.session_name}</span>
-                    <span class="timestamp">${r.timestamp}</span>
+            <div class="search-result-group">
+                <div class="session-header">
+                    <div class="session-info">
+                        <div class="session-name">${sessionGroup.session_name}</div>
+                        <div class="session-uuid">UUID: ${sessionGroup.session_uuid}</div>
+                        <div class="session-type">Mode: ${sessionGroup.session_type}</div>
+                    </div>
+                    <button class="${buttonClass}" data-uuid="${sessionGroup.session_uuid}" onclick="${onClick}">
+                        ${buttonText}
+                    </button>
                 </div>
-                <pre class="result-content">${r.content.substring(0, 200)}...</pre>
-                <button class="${buttonClass}" data-uuid="${r.session_uuid}" onclick="${onClick}">
-                    ${buttonText}
-                </button>
+                <div class="timestamp-tabs-container">
+                    ${timestampTabs}
+                </div>
             </div>
-        `}).join('');
+        `;
+        }).join('');
 
         container.innerHTML = countFeedback + resultsHtml;
+    }
 
-        // Add click handlers for jump buttons
-        // container.querySelectorAll('.jump-btn:not(.disabled)').forEach(btn => {
-        //     btn.addEventListener('click', (e) => {
-        //         const uuid = e.target.getAttribute('data-uuid');
-        //         this.jumpToTerminal(uuid);
-        //     });
-        // });
+    showSearchPreview(sessionUuid, timestamp, element) {
+        const tooltip = document.getElementById(`preview-${sessionUuid}-${timestamp}`);
+        const encodedContent = element.getAttribute('data-content');
+        
+        if (tooltip && encodedContent) {
+            // Decode the content and create preview element
+            const content = decodeURI(encodedContent);
+            const previewContent = document.createElement('div');
+            previewContent.className = 'preview-content';
+            // no truncation or we cannot scroll to highlight.
+            // previewContent.textContent = content.substring(0, 300);
+            previewContent.textContent = content
+            
+            // Clear tooltip and add content
+            tooltip.innerHTML = '';
+            tooltip.appendChild(previewContent);
+            
+            // Use mark.js to highlight keywords
+            const encodedQuery = encodeURI(this.currentSearchQuery.trim());
+            const query = decodeURI(encodedQuery);
+            if (query) {
+                const markInstance = new Mark(previewContent);
+                markInstance.mark(query, {
+                    className: 'search-highlight',
+                    caseSensitive: false,
+                    exclude: ['script', 'style', 'title', 'head', 'html']
+                });
+            }
+            
+            tooltip.style.display = 'block';
+            
+            // Position tooltip with directional logic
+            const rect = element.getBoundingClientRect();
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            
+            // Determine vertical position (top vs bottom)
+            const isInTopHalf = rect.top < viewportHeight / 2;
+            let topPosition;
+            
+            if (isInTopHalf) {
+                // Show below the element (current behavior)
+                topPosition = rect.bottom + 5;
+            } else {
+                // Show above the element
+                topPosition = rect.top - tooltipRect.height - 5;
+            }
+            
+            // Determine horizontal position (left vs right)
+            const isInLeftHalf = rect.left < viewportWidth / 2;
+            let leftPosition;
+            
+            if (isInLeftHalf) {
+                // Align with left edge of element (current behavior)
+                leftPosition = rect.left;
+            } else {
+                // Align with right edge of element
+                leftPosition = rect.right - tooltipRect.width;
+            }
+            
+            tooltip.style.left = `${leftPosition}px`;
+            tooltip.style.top = `${topPosition}px`;
 
+            // this.scrollToFirstHighlight(tooltip, 'search-highlight');
+            this.scrollToLastHighlight(tooltip, 'search-highlight');
+        }
+    }
+
+    showExpandedPreview(element, sessionUuid, timestamp, captureId) {
+        const modal = document.getElementById('expanded-preview-modal');
+
+        modal.setAttribute("data-capture-id", captureId);
+        modal.setAttribute("data-session-uuid", sessionUuid);
+        modal.setAttribute("data-timestamp", timestamp);
+
+        const previewBody = document.getElementById('expanded-preview-body');
+        const encodedContent = element.getAttribute('data-content');
+        
+        if (modal && previewBody && encodedContent) {
+            // Decode the content
+            const content = decodeURI(encodedContent);
+            
+            // Create preview element
+            const previewContent = document.createElement('div');
+            previewContent.className = 'expanded-preview-text';
+            previewContent.textContent = content;
+            
+            // Clear and set content
+            previewBody.innerHTML = '';
+            previewBody.appendChild(previewContent);
+            
+            // Use mark.js to highlight keywords
+            const encodedQuery = encodeURI(this.currentSearchQuery.trim());
+            const query = decodeURI(encodedQuery);
+            if (query) {
+                const markInstance = new Mark(previewContent);
+                markInstance.mark(query, {
+                    className: 'search-highlight',
+                    caseSensitive: false,
+                    exclude: ['script', 'style', 'title', 'head', 'html']
+                });
+            }
+            
+            // Show modal
+            modal.classList.remove('hidden');
+            
+            // Add escape key listener
+            document.addEventListener('keydown', this.handleEscapeKey);
+            // this.scrollToFirstHighlight(modal, 'search-highlight');
+            this.scrollToLastHighlight(modal, 'search-highlight');
+        }
+    }
+    
+    closeExpandedPreview() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+
+            modal.removeAttribute("data-capture-id");
+            modal.removeAttribute("data-session-uuid");
+            modal.removeAttribute("data-timestamp");
+
+            // Remove escape key listener
+            document.removeEventListener('keydown', this.handleEscapeKey);
+        }
+    }
+    
+
+    handleEscapeKeyForSearch = (event) => {
+        if (event.key === 'Escape') {
+            // Check if expanded preview is open first (higher priority)
+            const expandedModal = document.getElementById('expanded-preview-modal');
+            if (expandedModal && !expandedModal.classList.contains('hidden')) {
+                this.closeExpandedPreview();
+                event.stopPropagation();
+                return; // Don't close search modal if expanded preview was open
+            }
+            // Only close search modal if expanded preview is not open
+            this.closeSearchModal();
+            event.stopPropagation();
+            document.removeEventListener("keydown", this.handleEscapeKeyForSearch);
+        }
+    }
+
+    handleEscapeKey = (event) => {
+        if (event.key === 'Escape') {
+            this.closeExpandedPreview();
+        }
+        // stop event propagation
+        event.stopPropagation();
+    }
+
+    // more useful than scrollToFirstHighlight.
+    scrollToLastHighlight(container, className) {
+        const searchHighlights = container.getElementsByClassName(className);
+        // console.log("search highlight selected elements:", firstHighlight)
+        if (searchHighlights.length !== 0) {
+            // Scroll the highlighted element into view
+            const lastHighlight = searchHighlights[searchHighlights.length - 1]
+            lastHighlight.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+        }
+    }
+
+    scrollToFirstHighlight(container, className) {
+        const firstHighlight = container.querySelector('.'+className);
+        console.log("search highlight selected elements:", firstHighlight)
+        if (firstHighlight) {
+            // Scroll the highlighted element into view
+            // console.log("focusing the first highlight element");
+            firstHighlight.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest'
+            });
+        }
+    }
+
+    hideSearchPreview() {
+        document.querySelectorAll('.preview-tooltip').forEach(tooltip => {
+            tooltip.style.display = 'none';
+        });
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     jumpToTerminal(uuid) {
@@ -945,14 +1266,67 @@ class App {
     }
 
     closeSearchModal() {
+        // Hide expanded preview when closing search modal
+        this.closeExpandedPreview();
+        
         if (!document.getElementById('search-modal').classList.contains('hidden')) {
             document.getElementById('search-modal').classList.add('hidden');
+            // Remove escape key listener
+            document.removeEventListener('keydown', this.handleEscapeKey);
+        }
+
+        if (this.activeTab){
+            this.activeTab.focus();
         }
     }
 
     async openSessions() {
         document.getElementById('sessions-modal').classList.remove('hidden');
         await this.loadSessions();
+    }
+
+    openSearchResultDetail() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+
+            let capture_id = modal.getAttribute("data-capture-id");
+            window.open(`/capture/${capture_id}`, '_blank');
+        }
+    }
+
+    openSearchResultTimeline() {
+        const modal = document.getElementById('expanded-preview-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+
+            let uuid = modal.getAttribute("data-session-uuid");
+            let timestamp = modal.getAttribute("data-timestamp"); // result: "2026-04-05 14:57:21"
+            // to be used? we need to convert it to float or something? or just use it as is?
+            this.openTimeline({uuid, timestamp});
+        }
+    }
+
+    openTimeline(options) {
+        let url = "/timeline";
+        let uuid = options? options.uuid : null;
+        let timestamp = options? options.timestamp: null;
+
+        let query_params = [];
+
+        if (uuid) {
+            query_params.push("uuid="+encodeURIComponent(uuid));
+        }
+
+        if (timestamp) {
+            query_params.push("timestamp="+encodeURIComponent(timestamp));
+        }
+
+        if (query_params.length > 0){
+            url += "?" + query_params.join("&")
+        }
+
+        window.open(url, '_blank');
     }
 
     async loadSessions() {
@@ -1020,6 +1394,7 @@ class App {
                         <div class="session-name">${s.name}</div>
                         <div class="session-details">
                             <div class="session-uuid">UUID: ${s.uuid}</div>
+                            <div class="session-mode">Mode: ${s.session_type}</div>
                             <div class="session-created">Created: ${formattedDate}</div>
                             ${s.last_cwd ? `<div class="session-cwd">Last CWD: ${s.last_cwd}</div>` : ''}
                             <div class="session-profile">Profile: ${s.profile_name}</div>
@@ -1236,6 +1611,9 @@ class App {
         if (!document.getElementById('sessions-modal').classList.contains('hidden')) {
             document.getElementById('sessions-modal').classList.add('hidden');
         }
+        if (this.activeTab){
+            this.activeTab.focus();
+        }
     }
 
     showLoading(message) {
@@ -1251,6 +1629,112 @@ class App {
     showError(message) {
         // Show error message (you can implement this as needed)
         alert(message); // Simple implementation, you might want to use a better UI
+    }
+
+    showReconnectNotification() {
+        // Check if reconnect modal already exists and is visible
+        const reconnectModal = document.getElementById('reconnect-modal');
+        if (reconnectModal && !reconnectModal.classList.contains('hidden')) {
+            return; // Already showing
+        }
+
+        // Show reconnect modal
+        if (reconnectModal) {
+            reconnectModal.classList.remove('hidden');
+            FrontendLogger.info('Showing reconnect notification');
+        }
+    }
+
+    hideReconnectNotification() {
+        const reconnectModal = document.getElementById('reconnect-modal');
+        if (reconnectModal) {
+            reconnectModal.classList.add('hidden');
+            FrontendLogger.info('Hiding reconnect notification');
+        }
+    }
+
+    async waitForBackendAndReload() {
+        FrontendLogger.info('Starting to wait for backend to come back online');
+        
+        const checkBackend = async () => {
+            try {
+                const response = await fetch('/healthcheck');
+                if (response.ok) {
+                    FrontendLogger.info('Backend is back online - reloading page');
+                    this.hideReconnectNotification();
+                    window.location.reload();
+                    return true;
+                }
+            } catch (error) {
+                // Backend still not available
+            }
+            return false;
+        };
+
+        // Check immediately first
+        if (await checkBackend()) {
+            return;
+        }
+
+        // Show reconnect notification
+        this.showReconnectNotification();
+
+        // Then check every 2 seconds
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (await checkBackend()) {
+                break;
+            }
+        }
+    }
+
+    showRestoreProgress(total) {
+        const overlay = document.getElementById('restore-progress-overlay');
+        const currentSpan = document.getElementById('restore-current');
+        const totalSpan = document.getElementById('restore-total');
+        const progressFill = document.getElementById('restore-progress-fill');
+        
+        if (overlay && currentSpan && totalSpan && progressFill) {
+            currentSpan.textContent = '0';
+            totalSpan.textContent = total;
+            progressFill.style.width = '0%';
+            overlay.classList.remove('hidden');
+            FrontendLogger.info(`Showing restore progress for ${total} tabs`);
+        }
+    }
+
+    updateRestoreProgress(current, total) {
+        const currentSpan = document.getElementById('restore-current');
+        const progressFill = document.getElementById('restore-progress-fill');
+        
+        if (currentSpan && progressFill) {
+            currentSpan.textContent = current;
+            const percentage = total > 0 ? (current / total) * 100 : 0;
+            progressFill.style.width = `${percentage}%`;
+        }
+    }
+
+    hideRestoreProgress() {
+        const overlay = document.getElementById('restore-progress-overlay');
+        if (overlay) {
+            overlay.classList.add('hidden');
+            FrontendLogger.info('Hiding restore progress overlay');
+        }
+    }
+
+    reorderTabsBySavedState(uuidToTargetIndex) {
+        // Sort current tabs by their saved order
+        this.tabs.sort((a, b) => {
+            // if the value is zero, the logic shortcut would get fucked. so we plus one.
+            const aIndex = (uuidToTargetIndex.get(a.uuid)+1) || Number.MAX_SAFE_INTEGER;
+            const bIndex = (uuidToTargetIndex.get(b.uuid)+1) || Number.MAX_SAFE_INTEGER;
+            console.log("aIndex:", aIndex, "bIndex:", bIndex, "aUUID:", a.uuid, 
+                "bUUID", b.uuid
+            )
+            return (aIndex-bIndex);
+        });
+
+        FrontendLogger.info(`Tabs reordered according to saved state: ${this.tabs.map(t => t.uuid).join(', ')}`);
     }
 }
 

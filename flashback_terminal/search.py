@@ -204,7 +204,7 @@ class EmbeddingSearch:
 
 
 def reciprocal_rank_fusion(
-    *results_lists: List[List[Tuple[int, float]]], k: int = 60, top_k: int = 50
+    results_lists: List[List[Tuple[int, float]]], k: int = 60, top_k: int = 50
 ) -> List[Tuple[int, float]]:
     """Merge multiple result lists using Reciprocal Rank Fusion."""
     fused_scores: Dict[int, float] = defaultdict(float)
@@ -271,12 +271,16 @@ class SearchEngine:
                 embedding_results = await self.embedding.search(query, session_ids, limit * 2)
 
             rrf_k = self.config.get("modules.semantic_search.rrf_k", 60)
-            results = reciprocal_rank_fusion(bm25_results, embedding_results, k=rrf_k, top_k=limit)
+            results = reciprocal_rank_fusion([bm25_results, embedding_results], k=rrf_k, top_k=limit)
 
         else:
             raise ValueError(f"Unknown search mode: {mode}")
 
         enriched = []
+        # TODO: apply time filter before searching, get all doc ids within that time range before search, apply that doc id filter to search engine. or try to get all results from search engine so we can do post processing? recommend the first approach.
+        # BUT usearch does not support filtering in python. rust has it. can we write custom bindings to it? (vibe coding)
+        # or use chromadb?
+        # https://docs.trychroma.com/docs/querying-collections/metadata-filtering
         for doc_id, score in results:
             capture = await self.db.get_terminal_capture_by_id(doc_id)
             if capture:
@@ -306,6 +310,7 @@ class SearchEngine:
                         "session_uuid": session.uuid if session else None,
                         "session_name": session.name if session else None,
                         "session_status": session.status if session else None,
+                        "session_type": session.session_type if session else None,
                         "timestamp": capture["timestamp"],
                         "content": capture["text_content"],
                         "score": score,

@@ -37,7 +37,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "login_shell": True,
     },
     "session_manager": {
-        "mode": "tmux",  # "screen", "tmux" (REQUIRED: local PTY mode removed)
+        "mode": "screen",  # "screen", "tmux" (REQUIRED: local PTY mode removed)
         "disable_client_capture": True,  # Disable frontend terminal capture
         "screen": {
             "socket_dir": "~/.flashback-terminal/screen",

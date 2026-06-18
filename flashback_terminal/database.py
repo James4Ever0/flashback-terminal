@@ -4,7 +4,7 @@ import json
 import aiosqlite
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -516,11 +516,12 @@ class Database:
         limit: int = 50,
     ) -> List[Dict]:
         """Get terminal captures for timeline view."""
+        _additional_fields = "strftime('%Y-%m-%d %H:%M:%S', tc.timestamp, 'localtime') as timestamp_formatted_local, strftime('%s', tc.timestamp) as timestamp_unix"
         async with self._connect() as conn:
             if around_time:
                 # Get captures around a specific time
                 rows = await (await conn.execute(
-                    """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                    """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                        FROM terminal_captures tc
                        JOIN sessions s ON tc.session_id = s.id
                        WHERE abs(strftime('%s', tc.timestamp) - ?) < 300
@@ -531,7 +532,7 @@ class Database:
             elif before_time:
                 # Get captures before a specific time
                 rows = await (await conn.execute(
-                    """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                    """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                        FROM terminal_captures tc
                        JOIN sessions s ON tc.session_id = s.id
                        WHERE strftime('%s', tc.timestamp) < ?
@@ -542,7 +543,7 @@ class Database:
             else:
                 # Get most recent captures
                 rows = await (await conn.execute(
-                    """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                    """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                        FROM terminal_captures tc
                        JOIN sessions s ON tc.session_id = s.id
                        ORDER BY tc.timestamp DESC
@@ -569,6 +570,8 @@ class Database:
         self, capture_id: int, before: int = 5, after: int = 5
     ) -> List[Dict]:
         """Get neighboring captures for timeline context."""
+        _additional_fields = "strftime('%Y-%m-%d %H:%M:%S', tc.timestamp, 'localtime') as timestamp_formatted_local, strftime('%s', tc.timestamp) as timestamp_unix"
+
         async with self._connect() as conn:
             # First get the timestamp of the reference capture
             ref = await (await conn.execute(
@@ -582,7 +585,7 @@ class Database:
 
             # Get captures before
             before_rows = await (await conn.execute(
-                """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                    FROM terminal_captures tc
                    JOIN sessions s ON tc.session_id = s.id
                    WHERE tc.timestamp < ?
@@ -593,7 +596,7 @@ class Database:
 
             # Get captures after
             after_rows = await (await conn.execute(
-                """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                    FROM terminal_captures tc
                    JOIN sessions s ON tc.session_id = s.id
                    WHERE tc.timestamp > ?
@@ -610,7 +613,7 @@ class Database:
                 results.append(d)
 
             center = await (await conn.execute(
-                """SELECT tc.*, s.uuid as session_uuid, s.name as session_name
+                """SELECT """+_additional_fields+""", tc.*, s.uuid as session_uuid, s.name as session_name
                    FROM terminal_captures tc
                    JOIN sessions s ON tc.session_id = s.id
                    WHERE tc.id = ?""",
@@ -629,10 +632,22 @@ class Database:
             return results
 
     def _row_to_capture(self, row) -> TerminalCapture:
+        # Parse timestamp, assume UTC if no timezone info
+        timestamp_str = row["timestamp"]
+        if timestamp_str.endswith('Z'):
+            # ISO 8601 with Z suffix (UTC)
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        elif '+' in timestamp_str or timestamp_str.endswith('Z'):
+            # Already has timezone info
+            timestamp = datetime.fromisoformat(timestamp_str)
+        else:
+            # No timezone info, assume UTC
+            timestamp = datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+        
         return TerminalCapture(
             id=row["id"],
             session_id=row["session_id"],
-            timestamp=datetime.fromisoformat(row["timestamp"]),
+            timestamp=timestamp,
             screenshot_path=row["screenshot_path"],
             text_content=row["text_content"],
             ansi_content=row["ansi_content"],

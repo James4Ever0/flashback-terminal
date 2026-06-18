@@ -20,6 +20,7 @@
                 <button id="btn-new-tab">+ New Tab</button>
                 <button id="btn-search">Search</button>
                 <button id="btn-sessions">Sessions</button>
+                <button id="btn-timeline">Timeline</button>
             </div>
         </div>
         <div id="terminal-container"></div>
@@ -28,7 +29,7 @@
     <!-- Search Modal -->
     <div id="search-modal" class="modal hidden">
         <div class="modal-content">
-            <span class="close-btn">&times;</span>
+            <span id="search-modal-close" class="close-btn">&times;</span>
             <h2>Search Terminal History</h2>
             <input type="text" id="search-input" placeholder="Search...">
             <div class="search-controls">
@@ -52,12 +53,52 @@
     <!-- Sessions Modal -->
     <div id="sessions-modal" class="modal hidden">
         <div class="modal-content">
-            <span class="close-btn">&times;</span>
+            <span id="sessions-modal-close" class="close-btn" onclick="app.closeExpandedPreview()">&times;</span>
             <h2>Sessions</h2>
             <div id="sessions-list"></div>
         </div>
     </div>
 
+    <script src="/static/js/vendor/mark.min.js"></script>
+    <!-- Expanded Preview Modal -->
+    <div id="expanded-preview-modal" class="modal hidden">
+        <div class="expanded-preview-content">
+            <div class="expanded-preview-header">
+                <div class="header-section">
+                    <h3>Search Result Preview</h3>
+                    <div class="header-buttons">
+                        <button id="search-result-timeline">View in timeline</button>
+                        <button id="search-result-detail">Details</button>
+                    </div>
+                </div>
+                <span class="close-btn" onclick="app.closeExpandedPreview()">&times;</span>
+            </div>
+            <div class="expanded-preview-body" id="expanded-preview-body"></div>
+        </div>
+    </div>
+
+    <!-- Reconnect Notification Modal -->
+    <div id="reconnect-modal" class="modal hidden">
+        <div class="reconnect-content">
+            <div class="reconnect-spinner"></div>
+            <h3>Waiting for Backend</h3>
+            <p>The backend connection is lost. Waiting for the server to come back online...</p>
+        </div>
+    </div>
+
+    <!-- Tab Restoration Progress Overlay -->
+    <div id="restore-progress-overlay" class="restore-progress-overlay hidden">
+        <div class="restore-progress-content">
+            <div class="restore-progress-spinner"></div>
+            <h3>Restoring Sessions</h3>
+            <div class="restore-progress-text">Restoring <span id="restore-current">0</span> of <span id="restore-total">0</span> sessions...</div>
+            <div class="restore-progress-bar">
+                <div class="restore-progress-fill" id="restore-progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/vendor/mark.min.js"></script>
     <script src="/static/js/vendor/xterm.js"></script>
     <script src="/static/js/vendor/xterm-addon-fit.js"></script>
     <script src="/static/js/app.js"></script>
