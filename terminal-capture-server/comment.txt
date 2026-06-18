@@ -1,0 +1,1 @@
+server shall be responsible for compression, diff lines, instead of client. anyway to save bandwidth we might do it on client side?

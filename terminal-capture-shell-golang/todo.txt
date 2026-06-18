@@ -1,0 +1,5 @@
+add install command to set the default terminal to flashback-shell.
+
+write instructions for vscode, other ides to use flashback-shell instead.
+
+analyse asciinema recorder and how to send those raw ansi codes to a virtual terminal for rendering and capturing.

@@ -1,0 +1,10 @@
+in folder terminal-capture-shell-golang-pty i think it is not necessary to have those commands:
+
+  capture                    Capture all sessions and upload changes
+  list                       List managed PTY sessions
+  kill <id>                  Kill a specific session
+
+we would not create sockets for external program to parse the terminal view.
+would not create folder for session listing. would not track sessions.
+
+you would read the codebase and create a plan for removal & simplification.

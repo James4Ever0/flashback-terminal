@@ -1,0 +1,8 @@
+compared to github.com/charmbracelet/x/vt, there is a new terminal emulator at reference/terminal-master/term.go
+
+analyse it, check if it can replace github.com/charmbracelet/x/vt
+
+what might be wrong with x/vt? can we change the code and make it work?
+
+if not shall we replace it with reference/terminal-master/term.go
+

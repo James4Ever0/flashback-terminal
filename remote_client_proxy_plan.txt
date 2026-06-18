@@ -1,0 +1,474 @@
+# Remote Client Proxy Plan
+
+Before acting out, read mitm_tools.txt.
+
+Reference source code location:
+
+- reference/ssh-mitm
+- reference/vncproxy
+
+## Goal
+
+Build a man-in-the-middle (MITM) proxy for SSH and VNC remote access that:
+
+- Sits transparently between the real client and the real server.
+- Forwards traffic so the session works normally.
+- Captures and forwards the rendered output to a capture server:
+  - **SSH** -> terminal output stream (bytes / JSON-RPC events).
+  - **VNC** -> periodic framebuffer screenshots.
+
+The proxy itself does not need to implement SSH or VNC end-to-end. It can wrap
+existing, well-tested libraries and binaries so that authentication is handled
+naturally by the upstream server and the client talks to the real server through
+the proxy.
+
+---
+
+## Common design
+
+```
+                       +---------------------+
+                       |  capture server     |
+                       |  (receives JSON/    |
+                       |   images / events)  |
+                       +----------^----------+
+                                  |
++------------+      +-------------v--------------+      +------------+
+|   client   |----->|       proxy                |----->|   server   |
+| ssh / vnc  |      |  - decode just enough      |      | ssh / vnc  |
++------------+      |  - forward raw bytes       |      +------------+
+                    |  - capture rendered output |
+                    +----------------------------+
+```
+
+The proxy is intentionally thin for transport security: it does not terminate
+TLS/SSH crypto itself unless required. For SSH it can use an existing SSH proxy
+library to relay channels. For VNC it can relay the RFB protocol and also tap
+into a local VNC client/server rendering surface.
+
+---
+
+## 1. SSH proxy and terminal capture
+
+### 1.1 Two possible approaches
+
+#### Approach A: relay the SSH binary (simplest, recommended for a first PoC)
+
+Use the system's `ssh` command as the actual client. The proxy just orchestrates
+it.
+
+```
+user ssh client  --->  our proxy listener on :2222
+                              |
+                              v
+                    run `ssh -W host:22 user@localhost:2222`
+                              |
+                              v
+                         ssh server
+```
+
+Actually, the easiest MITM is:
+
+```
+ssh -o ProxyCommand="our-proxy %h %p" user@server
+```
+
+where `our-proxy` opens a TCP connection to the real server and copies bytes
+back and forth. This is a raw TCP MITM, not a true SSH MITM. The proxy sees
+ciphertext, not plaintext terminal data.
+
+To capture plaintext terminal output, the proxy must terminate SSH on the client
+side and create a new SSH connection to the server.
+
+#### Approach B: terminate SSH and re-encrypt (capturable MITM)
+
+```
+ssh client  --->  our proxy (sshd)  --->  ssh server
+                     |
+                     +-> run pty + shell inside proxy
+                     +-> capture pty output
+                     +-> forward user input to server via new ssh client
+```
+
+This is the approach that yields capturable plaintext. It is heavier but matches
+what tools like `ssh-chat`, `teleport`, or session-recording proxies do.
+
+### 1.2 Recommended minimal implementation: approach B with Go
+
+Use:
+
+- `golang.org/x/crypto/ssh` for both server (accept client) and client (connect
+to upstream).
+- `github.com/creack/pty` to allocate a PTY inside the proxy for the captured
+session.
+- The existing `terminal-capture-shell-golang` PTY/event machinery to capture
+output and forward it to the capture server.
+
+#### Components
+
+1. **SSH server side**
+   - Listen on a configurable port (default `:2222`).
+   - Accept one public-key or password authentication method.
+   - Reject authentication unless the upstream server also accepts the same
+credentials, OR authenticate the user separately and then connect upstream with
+configurable credentials.
+   - On auth success, start an SSH client connection to the real server.
+   - For each channel request (`session`, `direct-tcpip`, etc.):
+     - Open the corresponding channel on the upstream connection.
+     - Copy bytes bidirectionally.
+   - For `pty-req` and `shell` requests:
+     - Allocate a local PTY and run a PTY forwarder.
+     - Fork a small wrapper that connects the PTY to the upstream SSH session.
+     - Capture PTY master output and feed it to the capture server.
+
+2. **Upstream SSH client side**
+   - Connect to real server using stored/configured credentials or forwarded
+client credentials.
+   - Forward `pty-req`, `shell`, `exec`, env vars, window-change, and signals.
+
+3. **Capture side**
+   - Reuse the JSON-RPC line protocol from `terminal-capture-shell-golang`.
+   - Send `init`, `output`, `input`, `resize`, `exit`, `eof` events to the
+capture server over HTTP/HTTPS or a persistent socket.
+
+### 1.3 Authentication for SSH
+
+Option 1: password prompt passthrough
+- Client sends password to proxy.
+- Proxy tries same password against upstream server using `ssh.ClientConfig`
+`PasswordCallback`.
+- If upstream accepts, session starts.
+- Downside: proxy sees the password.
+
+Option 2: public key auth with an agent
+- Proxy exposes an SSH agent that forwards signing requests to the user's real
+agent (`ssh-agent`).
+- Upstream connection uses `ssh.AuthMethod` backed by the agent.
+- Downside: more moving parts.
+
+Option 3: issue users proxy credentials, connect upstream with service account
+- Proxy authenticates users itself, then connects to servers with a configured
+keypair.
+- Suitable for bastion / audit gateway scenarios.
+
+For a minimal PoC, implement option 1 (password passthrough) and document the
+security warning.
+
+### 1.4 Libraries / binaries
+
+| Purpose | Library / binary |
+|---------|------------------|
+| SSH server and client in Go | `golang.org/x/crypto/ssh` |
+| PTY allocation | `github.com/creack/pty` |
+| Raw terminal handling | `golang.org/x/term` |
+| JSON-RPC/event forwarding | reuse `terminal-capture-shell-golang/pkg/event` |
+| Optional: run real `ssh` for upstream | `os/exec` + system `ssh` |
+| Container base | `alpine:latest` or `debian:slim` + `openssh-client` |
+
+### 1.5 Docker / deployment
+
+```dockerfile
+FROM golang:1.22-alpine AS build
+WORKDIR /app
+COPY . .
+RUN go build -o ssh-proxy ./cmd/ssh-proxy
+
+FROM alpine:latest
+RUN apk add --no-cache openssh-client
+COPY --from=build /app/ssh-proxy /usr/local/bin/ssh-proxy
+EXPOSE 2222
+ENTRYPOINT ["/usr/local/bin/ssh-proxy"]
+```
+
+Run:
+
+```bash
+docker run -p 2222:2222 \
+  -e UPSTREAM_SSH=real-server:22 \
+  -e CAPTURE_URL=http://capture-server:8080/upload \
+  ssh-proxy
+```
+
+User connects with:
+
+```bash
+ssh -p 2222 user@proxy-host
+```
+
+### 1.6 Capture output format
+
+Same JSON-RPC line protocol as `terminal-capture-shell-golang`:
+
+```json
+{"method":"init","id":0,"time":0,"params":{"cols":80,"rows":24,"screen":"..."}}
+{"method":"output","id":1,"time":12345,"params":{"data":"base64(...)"}}
+{"method":"input","id":2,"time":12350,"params":{"data":"base64(...)"}}
+{"method":"resize","id":3,"time":23456,"params":{"cols":100,"rows":30}}
+{"method":"exit","id":4,"time":45678,"params":{"status":0}}
+```
+
+The capture server receives these events and can render / record them.
+
+### 1.7 Risks and limitations
+
+- **Password exposure**: password passthrough gives the proxy the plaintext
+password.
+- **Host key verification**: the proxy must verify the upstream server's host
+key. Store known_hosts in the container or via config.
+- **Channel coverage**: forwarding only `session` channels works for interactive
+shells. SFTP/SCP/direct-tcpip require extra forwarding.
+- **Latency**: decrypting and re-encrypting adds one RTT.
+- **Security labeling**: this is an intentional MITM; deploy only in authorized
+auditing / testing environments.
+
+---
+
+## 2. VNC proxy and screenshot capture
+
+### 2.1 Two possible approaches
+
+#### Approach A: raw RFB relay (simplest, no capture)
+
+Proxy opens a TCP socket, copies RFB bytes between client and server. The VNC
+session works, but the proxy cannot capture screenshots because traffic is
+encoded.
+
+#### Approach B: VNC client + VNC server inside proxy (capturable)
+
+```
+VNC client  --->  proxy VNC server  --->  proxy VNC client  --->  real VNC server
+                       |                              |
+                       +---- screenshot grabber <-----+
+```
+
+The proxy runs a VNC client connected to the real server and a VNC server that
+exposes that framebuffer to the user. The proxy can read the framebuffer at any
+time and encode it to PNG/JPEG/WebP for the capture server.
+
+This is the recommended approach for screenshot capture.
+
+### 2.2 Recommended minimal implementation
+
+Use a Go VNC library that can act as both client and server, or combine a Docker
+container with existing tools.
+
+#### Components
+
+1. **Upstream VNC client**
+   - Connects to real VNC server using configured credentials.
+   - Maintains a framebuffer.
+
+2. **Downstream VNC server**
+   - Accepts connections from user's VNC viewer.
+   - Presents the same framebuffer.
+   - Forwards keyboard/mouse input to upstream client.
+
+3. **Screenshot capture loop**
+   - On a timer or on significant framebuffer updates, encode the framebuffer to
+PNG.
+   - POST image to capture server with metadata (timestamp, session id,
+resolution).
+
+### 2.3 Libraries / binaries
+
+| Purpose | Library / binary |
+|---------|------------------|
+| VNC client in Go | `github.com/amitbet/vnc2video` or `github.com/mitchellh/go-vnc` |
+| VNC server in Go | `github.com/amitbet/vnc2video` has server support |
+| Image encoding | Go stdlib `image/png`, `image/jpeg`, `golang.org/x/image/webp` |
+| Framebuffer diff | manual rectangle diff or use library's update notifications |
+| Ready-made proxy | `novnc` + `websockify` does not capture screenshots by itself |
+| Headless real VNC server | `tigervnc`, `tightvnc`, `x11vnc` inside Docker |
+| Container base | `debian:slim` with tigervnc + x11vnc |
+
+A robust shortcut for experiments:
+
+```
+real VNC server  --->  local TigerVNC vncviewer -listen  --->  capture via scripted screenshots
+```
+
+But for an integrated proxy, embedding a VNC client/server library is cleaner.
+
+### 2.4 Authentication for VNC
+
+VNC authentication is normally a single password (or none). The proxy can:
+
+1. Ask the user for the VNC password when they connect.
+2. Use the same password to authenticate to the upstream VNC server.
+3. Optionally support VNC auth schemes such as `VncAuth`, `ARD`, or TLS.
+
+For a minimal PoC, support password passthrough and document the exposure.
+
+### 2.5 Docker / deployment
+
+```dockerfile
+FROM golang:1.22-bullseye AS build
+WORKDIR /app
+COPY . .
+RUN go build -o vnc-proxy ./cmd/vnc-proxy
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tigervnc-viewer \
+    libvncserver1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/vnc-proxy /usr/local/bin/vnc-proxy
+EXPOSE 5900
+ENTRYPOINT ["/usr/local/bin/vnc-proxy"]
+```
+
+Run:
+
+```bash
+docker run -p 5900:5900 \
+  -e UPSTREAM_VNC=real-server:5901 \
+  -e VNC_PASSWORD=secret \
+  -e CAPTURE_URL=http://capture-server:8080/upload \
+  vnc-proxy
+```
+
+User connects with any VNC viewer to `vnc://proxy-host:5900` and authenticates
+with the same password.
+
+### 2.6 Screenshot output format
+
+POST multipart/form-data to the capture server:
+
+```
+POST /upload/vnc
+Content-Type: multipart/form-data; boundary=---BOUNDARY
+
+---BOUNDARY
+Content-Disposition: form-data; name="session_id"
+
+<session-uuid>
+---BOUNDARY
+Content-Disposition: form-data; name="timestamp"
+
+<unix-nano>
+---BOUNDARY
+Content-Disposition: form-data; name="image"; filename="0001.png"
+Content-Type: image/png
+
+<PNG bytes>
+---BOUNDARY--
+```
+
+Add optional query params for format (`?format=webp&q=80`).
+
+### 2.7 Risks and limitations
+
+- **Password exposure**: VNC password is visible to the proxy.
+- **Performance**: re-encoding the framebuffer and capturing screenshots adds
+CPU and memory load.
+- **Encoding support**: VNC has many encodings (Raw, Hextile, Tight, ZRLE,
+TightPNG). The embedded library must support the ones the real server uses, or
+the proxy must negotiate a safe subset.
+- **TLS/ VeNCrypt**: if the upstream requires VeNCrypt or TLS, the proxy must
+terminate and re-encrypt.
+- **Mouse/keyboard sync**: the proxy must faithfully forward pointer and key
+events to keep the remote desktop responsive.
+
+---
+
+## 3. Shared capture server contract
+
+Both proxies send data to the same capture server. Suggested endpoints:
+
+- `POST /events/ssh/<session>` -> line-delimited JSON-RPC or per-event JSON.
+- `POST /upload/vnc/<session>` -> multipart image upload.
+- `POST /session/start` -> register a new session, returns session id.
+- `POST /session/end` -> mark session ended.
+
+The capture server can be a small Go/Flask/Node service that stores events and
+images. For this plan, only the proxy side is specified.
+
+---
+
+## 4. Suggested project layout
+
+```
+remote-client-proxy/
+├── cmd/
+│   ├── ssh-proxy/
+│   │   └── main.go
+│   ├── vnc-proxy/
+│   │   └── main.go
+│   └── capture-client/
+│       └── main.go      # small CLI to POST a directory of captures
+├── pkg/
+│   ├── sshmitm/
+│   │   ├── server.go
+│   │   ├── upstream.go
+│   │   └── capture.go
+│   ├── vncmitm/
+│   │   ├── server.go
+│   │   ├── upstream.go
+│   │   └── screenshot.go
+│   └── capture/
+│       ├── ssh.go
+│       └── vnc.go
+├── Dockerfile.ssh
+├── Dockerfile.vnc
+├── docker-compose.yml
+├── build.sh
+├── test.sh
+└── README.md
+```
+
+---
+
+## 5. Implementation order
+
+1. **SSH proxy PoC**
+   - Go SSH server listening on `:2222`.
+   - On password auth, connect upstream with same password.
+   - Forward one `session` channel + PTY.
+   - Allocate local PTY, capture output, POST JSON events.
+   - Verify with `ssh -p 2222 user@proxy`.
+
+2. **VNC proxy PoC**
+   - Embed a VNC client/server library.
+   - Expose a VNC server on `:5900`.
+   - Connect upstream on `:5901`.
+   - Capture framebuffer to PNG every N seconds or on update.
+   - Verify with any VNC viewer.
+
+3. **Capture server stub**
+   - Accept SSH events and VNC images.
+   - Store to disk or S3-compatible storage.
+
+4. **Containerization**
+   - Dockerfiles for each proxy.
+   - docker-compose with a stub capture server.
+
+5. **Tests and docs**
+   - Unit tests for auth passthrough and channel forwarding.
+   - Integration test with Dockerized OpenSSH and TigerVNC.
+   - README with architecture, security warnings, and usage.
+
+---
+
+## 6. Common libraries summary
+
+| Task | Go library | Container binary |
+|------|-----------|------------------|
+| SSH protocol | `golang.org/x/crypto/ssh` | `openssh-client` |
+| PTY / raw mode | `github.com/creack/pty`, `golang.org/x/term` | - |
+| VNC client/server | `github.com/amitbet/vnc2video` | `tigervnc-viewer` |
+| Image encoding | stdlib `image/png`, `image/jpeg` | - |
+| JSON-RPC events | reuse `terminal-capture-shell-golang/pkg/event` | - |
+| HTTP upload | stdlib `net/http` | - |
+
+---
+
+## 7. Security and legal notes
+
+- This is an intentional MITM. Use only on systems you own or are explicitly
+authorized to audit.
+- Both SSH and VNC passwords are visible to the proxy process.
+- Log captured sessions with access controls; terminal output may contain
+passwords, tokens, and private data.
+- Consider running the proxy as a dedicated non-root user inside the container.
+- Do not deploy on untrusted networks without additional TLS wrapping for the
+downstream listener.

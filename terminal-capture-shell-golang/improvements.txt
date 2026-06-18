@@ -1,0 +1,7 @@
+let the shell binary to read the config file from default location like ~/.config/terminal-capture-shell.yaml, create a default template config file if does not exist, and use it to store those currently passed from environment variables.
+
+make sure .config folder exists, if not create it.
+
+also the config file can be overriden by passing a config file path from the command line, like -c /path/to/config.yaml
+
+the config file shall be in yaml format.

@@ -1,0 +1,12 @@
+for linux configure the file ~/.config/Code/User/settings.json as such:
+
+    "terminal.integrated.profiles.linux": {
+        "flashback-shell": {
+        "path": "flashback-shell-new",
+        "args": [],
+        "env": {}
+        }
+    },
+    "terminal.integrated.defaultProfile.linux": "flashback-shell"
+
+also do it for macos. if windows just print warning (it cannot be done, only supports linux and macos)

@@ -1,0 +1,19 @@
+just like the screenshot app, simply make a shell-like executable which captures all things within tmux session.
+
+simply take screenshot of each session, each pane, then capture it, send it to remote server. keep a buffer of each, check duplication, check changes.
+
+need to have fallback options, if tmux is not installed, then we should not launch the terminal, instead use system default shell like $SHELL or bash.
+
+find sh, bash from path then execute, fallback to it if tmux not installed. print a hint for how to install tmux to PATH.
+
+the commandline tool is written in golang, some subcommands, one for creating new shell, one for capturing all existing sessions.
+
+new shell shall have the same working directory as current directory.
+
+kill the process if the shell dies. do not do nothing excessive like session restore, env capturing etc. just keep it simple for now.
+
+might accept commandline arguments? pass those to subshell?
+
+read reference code from flashback-terminal
+
+write plan to terminal-capture-shell-golang/plan.txt

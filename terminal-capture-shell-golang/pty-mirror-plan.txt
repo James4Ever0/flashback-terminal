@@ -1,0 +1,207 @@
+# PTY Mirror Plan for flashback-shell
+
+## Goal
+
+Replace direct `tmux attach` with a PTY-based bridge:
+
+1. The user interacts with a real shell running under a local PTY.
+2. All output from that PTY is copied both to the user's terminal and to a
+   background tmux "mirror" session.
+3. The mirror session exists only for tmux features: scrollback history,
+   `capture-pane`, and our existing capture/upload pipeline.
+
+This gives us native scrollback inside tmux while the user keeps a plain,
+non-tmux shell experience.
+
+## High-level architecture
+
+```
+User terminal (stdin/stdout)
+        ^
+        | raw bytes
+        v
++-------+------------------+
+| flashback-shell pty      |
+|  - owns PTY master       |
+|  - spawns shell on slave |
+|  - copies stdin -> PTY   |
+|  - copies PTY -> stdout  |
+|  - copies PTY -> mirror  |
++-------+------------------+
+        |
+        | output bytes (ANSI stream)
+        v
++-------+------------------+
+| tmux mirror session      |
+|  - pane runs receiver    |
+|  - receiver writes to    |
+|    its own terminal      |
+|  - tmux manages history  |
++-------+------------------+
+        |
+        v
+existing capture engine (capture-pane)
+```
+
+## New / changed components
+
+### 1. `flashback-shell pty` command (or env-gated `new` behavior)
+
+A new subcommand that:
+
+- Creates a PTY.
+- Spawns the configured shell on the PTY slave with the user's remaining args.
+- Starts the IO loop.
+- Manages the mirror tmux session lifecycle.
+- Handles cleanup on exit/signal.
+
+Suggested activation:
+
+```bash
+flashback-shell pty
+FLASHBACK_SHELL_PTY_MIRROR=1 flashback-shell new
+```
+
+Keep `flashback-shell new` unchanged for now; add `pty` as an experimental
+command. Once stable, `new` can switch to it by default.
+
+### 2. `flashback-shell receive <socket>` internal command
+
+A minimal command used inside the mirror tmux pane:
+
+- Opens a Unix domain socket at `<socket>`.
+- Reads raw bytes from the socket.
+- Writes those bytes to stdout (its own terminal).
+- Exits when the socket closes.
+
+This is the "mirror display". It is not interactive; it only consumes output.
+
+### 3. Mirror tmux session
+
+A normal tmux session created by `flashback-shell pty`:
+
+- Uses the existing `TmuxSession` helpers but does **not** attach to it.
+- Runs a single pane: `flashback-shell receive <mirror-socket>`.
+- Lives on its own socket in `socket_dir` (e.g., `~/.flashback-shell/tmux/flashback-<pid>-mirror`).
+- Is killed and cleaned up when the main PTY shell exits.
+
+### 4. Capture integration
+
+Reuse the existing capture engine:
+
+- Point `CaptureSession` at the mirror tmux session instead of the user session.
+- `capture-pane` now sees the full mirrored output including scrollback.
+- No changes needed to diff/scrollback/text-only logic.
+
+## Event mirroring analysis
+
+| Event | Mirrorable? | How |
+|---|---|---|
+| Shell output bytes | Yes | Copy PTY master -> mirror socket |
+| ANSI cursor movement | Yes | Part of output stream |
+| ANSI colors/attributes | Yes | Part of output stream |
+| Terminal resize | Yes | SIGWINCH -> `pty.Setsize` + `tmux resize-pane` |
+| Scrollback content | Yes | tmux `history-limit` stores prior output |
+| User keystrokes | No (not needed) | Sent only to PTY master |
+| Mouse input to app | Partial | Input goes to shell; resulting output is mirrored, but tmux pane does not receive the mouse events themselves |
+| Focus events | Partial | Can forward to shell; output changes are mirrored |
+| OSC 52 clipboard | Risk | Could leak if not filtered; decide later |
+
+### Resize events (important detail)
+
+1. `flashback-shell pty` receives SIGWINCH when the user's terminal resizes.
+2. Read the new size via `unix.IoctlGetWinsize` / `term.GetSize`.
+3. Call `pty.Setsize` on the PTY master so the shell gets the correct size.
+4. Send `tmux -S <mirror-socket> resize-pane -t <pane> -x <cols> -y <rows>`.
+5. The mirror tmux pane now matches the user's terminal dimensions.
+
+## Implementation steps
+
+### Phase 1: Prototype the mirror mechanism
+
+1. Build a standalone Go program:
+   - Open a PTY.
+   - Run `bash` on the slave.
+   - Read PTY master and print to stdout.
+   - Simultaneously write the same bytes to a Unix socket.
+2. Build a receiver:
+   - Read from the Unix socket and write to stdout.
+3. Start a tmux session running the receiver.
+4. Type in the prototype shell and verify the tmux pane shows the same screen.
+5. Resize the prototype terminal and verify `tmux capture-pane` reflects the new
+   size after sending `resize-pane`.
+
+### Phase 2: Add `flashback-shell receive`
+
+1. Add a hidden/internal subcommand `receive <socket-path>`.
+2. It opens the socket, loops `read -> os.Stdout.Write`, exits on EOF/error.
+3. Guard it so it is not user-facing in help.
+
+### Phase 3: Add `flashback-shell pty`
+
+1. Add a new `cmd/pty.go` package.
+2. Implement PTY creation.
+3. Spawn the shell with user's args.
+4. Start the mirror tmux session using `flashback-shell receive <mirror-socket>`.
+5. Run three goroutines:
+   - `stdin -> PTY master`
+   - `PTY master -> stdout`
+   - `PTY master -> mirror socket` (best-effort, drop if mirror is slow)
+6. On SIGWINCH: resize PTY and tmux pane.
+7. On exit/signal: kill shell, kill mirror tmux session, remove sockets.
+
+### Phase 4: Integrate capture
+
+1. In `backgroundCapture`, use the mirror tmux session as the capture target.
+2. The user-facing PTY shell has no tmux session, so there is nothing to capture
+   there.
+3. Verify uploads still work and include scrollback when enabled.
+
+### Phase 5: Configuration and polish
+
+1. Add env vars:
+   - `FLASHBACK_SHELL_PTY_MIRROR=1` to enable PTY mode.
+   - `FLASHBACK_SHELL_MIRROR_SOCKET_DIR` (optional override).
+2. Add config keys (later):
+   - `pty_mirror: false`
+   - `mirror_socket_dir: ""`
+3. Update README with the new mode and event limitations.
+4. Decide whether to make PTY mode the default for `flashback-shell new`.
+
+## Caveats and risks
+
+- **Performance**: every byte is written twice (to user and to mirror). For fast
+  curses apps this adds CPU and latency.
+- **Terminal capability mismatches**: the user's terminal and the mirror tmux
+  pane may interpret the same ANSI sequence differently. We will force
+  `TERM=xterm-256color` in the mirror session to keep it consistent.
+- **Mouse and focus**: the mirror pane is output-only. Applications that rely on
+  mouse input will still work for the user, but tmux will not see the mouse
+  events; capture only reflects output changes.
+- **Clipboard OSC 52**: if the shell/application writes clipboard sequences,
+  they will be mirrored. Decide whether to filter them.
+- **SIGWINCH timing**: if a resize happens while tmux is busy, the pane size
+  may lag briefly. This is acceptable for capture.
+- **Complexity**: we replace a simple `tmux attach` with a custom PTY multiplexer.
+  Any bug in the IO loop can corrupt the user's terminal session.
+
+## Verification checklist
+
+- [ ] Prototype: user shell and tmux mirror show identical visible content.
+- [ ] Prototype: `tmux capture-pane` from the mirror matches the user's screen.
+- [ ] Prototype: scrollback is available in the mirror session.
+- [ ] Prototype: resize is reflected in captured output.
+- [ ] `flashback-shell receive` works when run manually inside tmux.
+- [ ] `flashback-shell pty` starts, runs a shell, and cleans up on exit.
+- [ ] Background capture still uploads changes.
+- [ ] No dead mirror sessions remain after SIGINT/SIGTERM.
+- [ ] Fallback behavior (tmux missing) still works as before.
+
+## Notes
+
+- Do not delete the existing tmux-based `new` command until the PTY path is
+  proven stable.
+- The mirror session should use a separate socket so it does not appear in
+  `flashback-shell list` as a normal user session (or `list` should hide
+  `-mirror` sockets).
+- Keep the existing capture engine untouched; only the session target changes.

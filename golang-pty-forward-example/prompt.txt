@@ -1,0 +1,19 @@
+need you to wrap around a terminal program, namely bash, to read and write all bytes from it, using pty, and make sure you behave consistently with the terminal, such as responding to escape sequences, resize events, mouse events and so on.
+
+the main purpose is to copy and forward the underlying program output to another socket or something and can buffer all the output, launch a read-only terminal program inside tmux to view and capture the output.
+
+the communication protocol might be: JSONRPC, one line per event to differentiate normal terminal output from special events like resize, mouse events (if cannot be expressed by ANSI escape sequences), etc.
+
+priority:
+
+1. make sure you can wrap around the underlying bash program, vim program and so on.
+2. make sure you can forward the output to another socket, and make sure the output is consistent with the underlying program.
+3. make sure you can handle resize events and mouse events.
+
+for debugging, you can create a JSONRPC reader for logging the output events aside of the read only receiver.
+
+principles:
+
+- you can create separate package, folder, rename things.
+- you should use both third party libraries and built-in libraries.
+- you need to provide build script, test script, and documentation.

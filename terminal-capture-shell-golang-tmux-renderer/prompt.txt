@@ -1,0 +1,8 @@
+replace the original tmux based session launcher with socket based console program io forwarder and tmux renderer.
+
+follow similar commandline syntax though, remove unnecessary flags. only implement feasible flags and commands.
+
+reference:
+
+terminal-capture-shell-golang
+golang-pty-forward-example

@@ -1,0 +1,419 @@
+# Terminal Capture Shell (Go + PTY/VT) — Implementation Plan
+
+## Overview
+
+Replace the tmux-based backend in `terminal-capture-shell-golang` with a pure-Go PTY + VT emulator approach taken from `golang-bash-forwarder-with-vt`. The CLI keeps the same command names and global-flag style as `flashback-shell`, but sessions are now managed through lightweight Unix-socket session servers instead of tmux sockets.
+
+References:
+- `terminal-capture-shell-golang/` — original tmux-based `flashback-shell` CLI, config, capture/upload pipeline.
+- `golang-bash-forwarder-with-vt/` — PTY startup, `charmbracelet/x/vt` integration, raw-mode handling, async VT feeding, and input-pipe forwarding.
+
+---
+
+## Design Principles
+
+1. **No tmux dependency.** The shell runs directly inside a PTY.
+2. **Internal VT render.** `charmbracelet/x/vt` emulates the terminal so captures can be produced without `tmux capture-pane`.
+3. **Session-server model.** Each `new` session is a small daemon that owns the PTY/VT and listens on a Unix socket. This preserves `list`, `kill`, and `capture` across independent CLI invocations.
+4. **Kill on death.** When the shell process exits, the session server exits and removes its socket. No restore/resurrection.
+5. **Same CWD.** New shells start in the CLI's current working directory.
+6. **Static-friendly.** Single Go binary; CGO-free build.
+
+---
+
+## CLI Subcommands (preserved from flashback-shell)
+
+### Global flags (kept)
+
+Global flags must appear **before** the subcommand:
+
+```bash
+flashback-shell-pty -vvv -l - new
+```
+
+| Flag | Description |
+| --- | --- |
+| `-c <path>` | Config file path. Default: `~/.config/terminal-capture-shell-pty.yaml`. |
+| `-v`, `-vv`, `-vvv` | Verbosity level. `-v` = warn, `-vv` = info, `-vvv` = debug. |
+| `-l <path>` | Log output file. Default: `~/.flashback-shell-pty/log/flashback-shell-pty.log`. |
+| `-l -` | Log to stderr. |
+| `--no-capture` | Disable background capture for this `new` session. |
+
+### `new [args...]`
+
+1. Load config and determine the shell binary (`$SHELL` → `/bin/bash`).
+2. Generate a session ID, e.g. `flashback-<pid>`.
+3. Start a **session server** as a background child process on a dedicated Unix socket in `socket_dir` (`~/.flashback-shell-pty/sockets/flashback-<pid>.sock`).
+4. The current CLI process becomes a **client** that connects to the socket, enters raw mode, and bridges:
+   - local stdin → server (shell input)
+   - server → local stdout (shell output)
+   - local SIGWINCH → server (resize)
+5. When the client disconnects or the shell exits, the server kills the shell and removes the socket.
+6. Remaining `[args...]` are passed directly to the shell (e.g. `-c 'echo hello'`).
+
+### `capture`
+
+1. Discover all session sockets in `socket_dir`.
+2. For each running session, connect and request a screen snapshot (ANSI + text + cols/rows + cursor).
+3. Compute MD5 hash, apply deduplication against `~/.flashback-shell-pty/state/<session>.hash`.
+4. Apply optional `diff_only` / `text_only` transforms (reuse logic from original `pkg/capture`).
+5. Upload changed snapshots to the configured server, or buffer locally if upload fails.
+
+### `list`
+
+1. Scan `socket_dir`.
+2. For each socket, query the server for metadata (session ID, shell PID, cols/rows, attached?).
+3. Print a table: `ID`, `SOCKET`, `SIZE`, `ATTACHED`.
+4. Skip and delete stale sockets whose server does not respond.
+
+### `kill <session-id>`
+
+1. Resolve the socket for the given session ID.
+2. Send a `kill` command to the server.
+3. The server terminates the shell process, cleans up, and removes the socket.
+
+### `check`
+
+1. Validate that the shell binary exists and is executable.
+2. Validate that PTY support works (creack/pty can open a master/slave pair).
+3. Print effective config values and their sources (`env`, `config`, `default`).
+
+---
+
+## Removed vs Original flashback-shell
+
+| Original | Change |
+| --- | --- |
+| tmux session backend | Replaced by PTY + session server. |
+| `allow_nested_tmux` | Removed — no tmux to nest inside. |
+| `capture_scrollback` | Replaced by `scrollback_lines` (VT scrollback limit). |
+| Multi-pane/window support | Removed — one shell per session, single VT screen. |
+| tmux install hint | Removed — no external terminal multiplexer required. |
+
+## Removed vs golang-bash-forwarder-with-vt
+
+| Forwarder feature | Change |
+| --- | --- |
+| `--listen` public event socket | Removed. The session server socket is internal-only. |
+| JSON-RPC event streaming | Removed. Simple request/response control protocol only. |
+| `receiver` / `logger` binaries | Removed. Single binary only. |
+| `--capture` / `--capture-text` one-shot files | Replaced by the `capture` subcommand and server API. |
+| `--vt-log` continuous dump | Optional config flag only; not primary CLI feature. |
+
+---
+
+## Directory Layout
+
+```
+terminal-capture-shell-golang-pty/
+├── go.mod
+├── main.go                      // CLI entrypoint and global flag parsing
+├── plan.txt                     // This file
+├── cmd/
+│   ├── new.go                   // "new" subcommand
+│   ├── capture.go               // "capture" subcommand
+│   ├── list.go                  // "list" subcommand
+│   ├── kill.go                  // "kill" subcommand
+│   └── check.go                 // "check" subcommand
+└── pkg/
+    ├── config/
+    │   └── config.go            // Config, env overrides, logger setup
+    ├── log/
+    │   └── log.go               // Leveled logger (reuse original)
+    ├── ptywrap/
+    │   └── ptywrap.go           // PTY start/resize (from forwarder)
+    ├── rawmode/
+    │   └── rawmode.go           // Raw mode + size (from forwarder)
+    ├── vtcapture/
+    │   └── vtcapture.go         // VT emulator wrapper (from forwarder)
+    ├── session/
+    │   ├── server.go            // Session server: PTY/VT + Unix socket listener
+    │   ├── client.go            // Client that attaches/captures/kills
+    │   ├── protocol.go          // Line-delimited JSON request/response protocol
+    │   └── discover.go          // Socket directory scanning
+    ├── capture/
+    │   ├── capture.go           // Deduplication, diff, text-only
+    │   └── buffer.go            // Local retry buffer (reuse original)
+    └── server/
+        └── client.go            // HTTP upload client (reuse original)
+```
+
+---
+
+## Key Components
+
+### 1. Config (`pkg/config/config.go`)
+
+Reuse the original config loader but drop tmux-specific fields:
+
+```go
+type Config struct {
+    ServerURL       string `yaml:"server_url"`
+    SocketDir       string `yaml:"socket_dir"`
+    Shell           string `yaml:"shell"`
+    BufferSize      int    `yaml:"buffer_size"`
+    DeviceID        string `yaml:"device_id"`
+    CaptureInterval int    `yaml:"capture_interval"`
+    DisableCapture  bool   `yaml:"disable_capture"`
+    DiffOnly        bool   `yaml:"diff_only"`
+    DiffMode        string `yaml:"diff_mode"`
+    TextOnly        bool   `yaml:"text_only"`
+    ScrollbackLines int    `yaml:"scrollback_lines"`
+}
+```
+
+Defaults:
+- `socket_dir`: `~/.flashback-shell-pty/sockets`
+- `scrollback_lines`: 1000
+- `capture_interval`: 30
+- `buffer_size`: 100
+- `diff_mode`: `suffix`
+
+Environment variables (same naming convention):
+- `FLASHBACK_SHELL_PTY_SERVER_URL`
+- `FLASHBACK_SHELL_PTY_SOCKET_DIR`
+- `FLASHBACK_SHELL_PTY_SHELL`
+- `FLASHBACK_SHELL_PTY_BUFFER_SIZE`
+- `FLASHBACK_SHELL_PTY_DEVICE_ID`
+- `FLASHBACK_SHELL_PTY_CAPTURE_INTERVAL`
+- `FLASHBACK_SHELL_PTY_DISABLE_CAPTURE`
+- `FLASHBACK_SHELL_PTY_DIFF_ONLY`
+- `FLASHBACK_SHELL_PTY_DIFF_MODE`
+- `FLASHBACK_SHELL_PTY_TEXT_ONLY`
+- `FLASHBACK_SHELL_PTY_SCROLLBACK_LINES`
+
+### 2. PTY Wrapper (`pkg/ptywrap/ptywrap.go`)
+
+Directly reuse from `golang-bash-forwarder-with-vt/pkg/ptywrap`:
+- `Start(cmd *exec.Cmd) (*os.File, error)` — start command on a PTY.
+- `Resize(ptmx *os.File, rows, cols uint16) error` — `TIOCSWINSZ`.
+- `Size(ptmx *os.File) (*pty.Winsize, error)` — `TIOCGWINSZ`.
+
+### 3. Raw Mode (`pkg/rawmode/rawmode.go`)
+
+Directly reuse from `golang-bash-forwarder-with-vt/pkg/rawmode`:
+- `MakeRaw(fd int) (restore func() error, state *term.State, err error)`
+- `IsTerminal(fd int) bool`
+- `Size(fd int) (cols, rows int, err error)`
+
+### 4. VT Capture (`pkg/vtcapture/vtcapture.go`)
+
+Directly reuse from `golang-bash-forwarder-with-vt/pkg/vtcapture`:
+- `NewTerminal(cols, rows int) *Terminal`
+- `Write(p []byte) (int, error)`
+- `Read(p []byte) (int, error)` — input-pipe replies
+- `Close() error`
+- `Resize(cols, rows int)`
+- `SetScrollbackSize(n int)`
+- `CaptureANSI() []byte`
+- `CaptureText() []byte`
+- `CaptureScrollbackANSI(n int) []byte`
+- `CaptureScrollbackText(n int) []byte`
+- `Size() (cols, rows int)`
+- `Cursor() (row, col int)`
+
+Important: keep the input-pipe forwarding goroutine so OSC color queries do not hang the shell (see `pty-lib-update-plan.txt` Option A).
+
+### 5. Session Server (`pkg/session/server.go`)
+
+Responsibilities:
+- Start the shell on a PTY.
+- Run the VT emulator.
+- Listen on a Unix socket for client commands.
+- Forward input from attached client to PTY.
+- Forward PTY output to attached client and VT emulator.
+- Handle resize commands from client.
+- Run background capture ticker if enabled.
+- On shell exit or `kill` command: close socket, kill shell, cleanup.
+
+Internal goroutines (same pattern as forwarder):
+- stdin → PTY (only when a client is attached)
+- PTY → stdout + VT emulator
+- VT emulator input pipe → PTY
+- SIGWINCH → resize
+- background capture ticker
+- Unix socket command handler
+
+### 6. Session Client (`pkg/session/client.go`)
+
+Client operations:
+- `Attach(socketPath string, cfg *config.Config) error` — used by `new`.
+- `Capture(socketPath string, scrollback bool) (*Capture, error)` — used by `capture`.
+- `Status(socketPath string) (*SessionInfo, error)` — used by `list`.
+- `Kill(socketPath string) error` — used by `kill`.
+
+### 7. Session Protocol (`pkg/session/protocol.go`)
+
+Simple line-delimited JSON request/response:
+
+Request examples:
+```json
+{"method":"attach","cols":80,"rows":24}
+{"method":"capture","scrollback":false}
+{"method":"status"}
+{"method":"kill"}
+```
+
+Response envelope:
+```json
+{"ok":true,"method":"capture","payload":{"ansi":"...","text":"...","cols":80,"rows":24,"cursor_row":0,"cursor_col":0}}
+{"ok":false,"method":"attach","error":"session already attached"}
+```
+
+For `attach`, after the OK response the socket becomes a bidirectional raw byte stream (input/output). The initial response is the only JSON line; everything after is raw PTY I/O.
+
+### 8. Capture Engine (`pkg/capture/capture.go`)
+
+Reuse the original engine but replace `TmuxSession` with `session.Client.Capture()`:
+- Discover sessions via `pkg/session/discover.go`.
+- For each session, call `Capture()` to get ANSI/text/cols/rows.
+- Hash, dedup, diff-only, text-only, save hashes.
+- Return `[]Capture` for upload.
+
+`Capture` struct stays the same, with `PaneID` set to `"main"` (or `"0"`) since there is only one screen per session.
+
+### 9. Upload Client (`pkg/server/client.go`)
+
+Reuse the original HTTP upload client unchanged.
+
+### 10. Buffer (`pkg/capture/buffer.go`)
+
+Reuse the original local retry buffer unchanged.
+
+---
+
+## Data Flow
+
+### `new` command flow
+
+```
+User runs: flashback-shell-pty new [args...]
+  │
+  ├─ Load config
+  ├─ Determine shell binary
+  ├─ Generate session ID: flashback-<pid>
+  ├─ Start session server on ~/.flashback-shell-pty/sockets/flashback-<pid>.sock
+  │   (server owns PTY + VT)
+  │
+  ├─ Client connects to socket
+  ├─ Send attach request
+  ├─ Enter raw mode
+  ├─ Bridge stdin ↔ socket and stdout ↔ socket
+  ├─ Forward SIGWINCH as resize
+  │
+  ├─ On shell exit or client disconnect:
+  │   server kills shell, removes socket
+  │   client restores terminal, exits
+```
+
+### Background capture flow (inside session server)
+
+```
+Session server running
+  │
+  ├─ Every capture_interval seconds:
+  │     CaptureANSI / CaptureText from VT emulator
+  │     (or CaptureScrollbackANSI if configured)
+  │
+  ├─ If server_url configured:
+  │     Send to upload client
+  │     Retry on failure, buffer locally
+  │
+  └─ Continue until shell exits
+```
+
+### `capture` command flow
+
+```
+User runs: flashback-shell-pty capture
+  │
+  ├─ Scan socket_dir
+  ├─ For each socket:
+  │     Connect, send capture request
+  │     Receive ANSI/text/cols/rows
+  │     Compute hash
+  │     Deduplicate against state dir
+  │     Apply diff-only / text-only
+  │
+  ├─ Upload batch
+  ├─ Save hashes
+  └─ Exit
+```
+
+### `list` command flow
+
+```
+User runs: flashback-shell-pty list
+  │
+  ├─ Scan socket_dir
+  ├─ For each socket, send status request
+  ├─ Print table
+  └─ Clean up stale sockets
+```
+
+### `kill` command flow
+
+```
+User runs: flashback-shell-pty kill <session-id>
+  │
+  ├─ Resolve socket path from session-id
+  ├─ Send kill command
+  ├─ Server terminates shell and removes socket
+  └─ Exit
+```
+
+---
+
+## Simplifications vs Original flashback-shell
+
+| Feature | flashback-shell (tmux) | flashback-shell-pty (this plan) |
+| --- | --- | --- |
+| Terminal backend | tmux | PTY + VT emulator |
+| Multiplexing | Multiple panes/windows | One shell per session |
+| Session persistence | tmux socket | Internal Unix socket server |
+| Capture source | `tmux capture-pane` | VT emulator snapshot |
+| Scrollback | tmux history-limit | VT `scrollback_lines` |
+| Nested session support | `allow_nested_tmux` | Not applicable |
+| External dependencies | tmux (optional) | None beyond Go modules |
+
+---
+
+## Open Questions / Future Work
+
+1. **Re-attach / detach:** Should `new` support detaching and later re-attaching? For simplicity, start with "attach once; shell dies on disconnect." Add `attach` command later if needed.
+2. **Multiple clients:** Should the session server allow more than one attached client? Start with exclusive attach; `capture`/`status` work while a client is attached.
+3. **ANSI fidelity:** `vtcapture.CaptureANSI` is currently best-effort. Improve color/attribute reconstruction if the server needs exact ANSI.
+4. **Screenshot rendering:** Keep rendering on the remote server; the Go binary only uploads text/ANSI.
+5. **Authentication:** Bearer token for uploads? Add `--token` flag or env var later.
+6. **Windows support:** PTY + Unix socket is Unix-only. Windows is out of scope for the first version.
+
+---
+
+## Implementation Order
+
+1. **Bootstrap:** `go mod init`, set up replace directives for `reference/x-main/vt` and dependencies, create `main.go` with stdlib flag parsing.
+2. **Port reusable packages:** copy/adapt `ptywrap`, `rawmode`, `vtcapture` from `golang-bash-forwarder-with-vt`.
+3. **Config + logger:** port config loader, drop tmux fields, add `scrollback_lines`.
+4. **Session protocol + discover:** define request/response types and socket scanning.
+5. **Session server:** PTY/VT + socket listener, basic `attach`/`capture`/`status`/`kill` commands.
+6. **Session client attach:** implement `new` command.
+7. **`list` and `kill` commands:** query server metadata and terminate sessions.
+8. **Capture engine integration:** dedup, diff, text-only, using `session.Client.Capture()`.
+9. **Upload + buffer:** port original `pkg/server/client.go` and `pkg/capture/buffer.go`.
+10. **Background capture in server:** ticker inside session server.
+11. **`check` command:** validate shell and PTY support.
+12. **Build/test scripts:** `build.sh`, `test.sh`, README update.
+
+---
+
+## Dependencies
+
+Go modules (keep minimal):
+- `github.com/creack/pty` — PTY creation/resize.
+- `golang.org/x/sys` — syscalls.
+- `golang.org/x/term` — raw mode / terminal size.
+- `github.com/charmbracelet/x/vt` — VT emulator (via local replace).
+- `github.com/charmbracelet/ultraviolet` — VT cell type (via local replace).
+- `gopkg.in/yaml.v3` — config file parsing.
+
+No tmux. No database. No async framework. No web server.

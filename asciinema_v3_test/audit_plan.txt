@@ -1,0 +1,21 @@
+you need to update asciinema_v3_test/asciinema_stream_to_tmux_and_capture_headless.py to let me know the cursor position, terminal size and other things about the tmux session
+
+read reference/agi_computer_control/tmux_trials/lib_stable.py about how to log that.
+
+also check if you have successfully performed resize event after received anything relevant from the websocket.
+
+captured log output excerpt:
+
+[ws] Resize id=438 rel_time_us=43826 cols=72 rows=14
+[ws] Output id=439 rel_time_us=144 text_bytes=185
+[ws] Resize id=440 rel_time_us=40767 cols=72 rows=16
+[ws] Output id=441 rel_time_us=155 text_bytes=185
+[ws] Resize id=442 rel_time_us=58619 cols=72 rows=17
+[ws] Output id=443 rel_time_us=111 text_bytes=185
+[2026-06-16T17:27:18.506] capture bytes=1186 changed=True
+===== tmux pane =====
+(base) jamesbrown@rainbow:~/Desktop/works/terminal-searcher/asciinema_v3
+(base) jamesbrown@rainbow:~/Desktop/works/terminal-searcher/asciinema_v3
+(base) jamesbrown@rainbow:~/Desktop/works/terminal-searcher/asciinema_v3
+(base) jamesbrown@rainbow:~/Desktop/works/terminal-searcher/asciinema_v3
+(base) jamesbrown@rainbow:~/Desktop/works/terminal-searcher/asciinema_v

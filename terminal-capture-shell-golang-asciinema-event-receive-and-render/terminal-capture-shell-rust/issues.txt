@@ -1,0 +1,1 @@
+nothing shown when run new command. seems something blocking. check code.

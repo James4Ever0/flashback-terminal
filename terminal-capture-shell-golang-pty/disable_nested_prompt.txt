@@ -1,0 +1,1 @@
+now set environment variable FLASHBACK_SHELL=1 after entering the shell, check if we are nested, default disallow nested session, that is if this env is set, we refuse to launch. only if override by cli or config.

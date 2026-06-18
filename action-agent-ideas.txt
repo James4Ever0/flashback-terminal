@@ -1,0 +1,5 @@
+remotely issue commands to the capture agent, to perform actions. like directly sending console commands, GUI operations, right in the session.
+
+possible through VNC proxy, screenshot agent, shell pty agent, ssh agent.
+
+but would it be to messy? shall we use another separate headless agent or sandbox agent? shall we only access the user filesystem readonly? that would be only one extra observatory agent to manage.

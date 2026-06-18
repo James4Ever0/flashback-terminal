@@ -1,0 +1,1 @@
+nothing logged there, and the goroutine is not working. better switch to pty instead or subprocess? do not mess with the standard output and standard error with log info unless specified by command line. do not use os.fork or python-like os.system to hand over the entire process to tmux session attach client.

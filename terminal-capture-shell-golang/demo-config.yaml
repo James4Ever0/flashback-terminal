@@ -1,0 +1,45 @@
+# Demo configuration for flashback-shell
+# Copy this file to ~/.config/terminal-capture-shell.yaml and adjust the values.
+# Environment variables (FLASHBACK_SHELL_*) override values in this file.
+
+# Remote server URL for uploading captures.
+# Leave empty to keep captures local only.
+server_url: "https://example.com"
+
+# Directory where tmux socket files and temporary config are stored.
+socket_dir: "~/.flashback-shell/tmux"
+
+# Shell binary inside tmux sessions.
+# Empty means use $SHELL, or fall back to /bin/bash.
+shell: "/bin/bash"
+
+# Maximum buffered capture batches kept for retry.
+buffer_size: 100
+
+# Device identifier sent with uploads.
+# Empty means use the hostname.
+device_id: "my-laptop"
+
+# Seconds between background captures for the 'new' command.
+# Set to 0 to disable periodic capture.
+capture_interval: 30
+
+# Disable background capture entirely for the 'new' command.
+disable_capture: false
+
+# Capture the full tmux scrollback buffer instead of only the visible pane.
+# WARNING: with a large history-limit this can produce very large payloads.
+capture_scrollback: false
+
+# Allow flashback-shell to run inside an existing tmux session by unsetting
+# TMUX variables. Requires the env(1) binary on PATH.
+allow_nested_tmux: false
+
+# Only capture lines that newly appeared since the previous capture.
+diff_only: false
+
+# Diff algorithm when diff_only is true: "suffix" (default) or "index".
+diff_mode: "suffix"
+
+# Send only plain-text captures; omit ANSI escape codes from uploads.
+text_only: false

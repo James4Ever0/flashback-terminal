@@ -1,0 +1,53 @@
+# Example configuration for flashback-shell-pty.
+# Copy this file to the default location:
+#
+#     cp config.example.yaml ~/.config/terminal-capture-shell-pty.yaml
+#
+# Values shown here are the defaults. Environment variables override config-file
+# values; see README.md for the full list.
+
+# Remote server URL for uploading captures (empty = local only)
+server_url: ""
+
+# Shell binary inside sessions (empty = $SHELL or /bin/bash)
+shell: ""
+
+# Maximum buffered capture batches kept for retry
+buffer_size: 100
+
+# Retry buffer backend: "memory" (default) or "disk"
+buffer_mode: memory
+
+# Parent directory for the disk retry buffer (only used when buffer_mode: disk).
+# Default is /tmp, which is cleared on reboot.
+buffer_dir: "/tmp"
+
+# Device identifier sent with uploads (empty = hostname)
+device_id: ""
+
+# Seconds between background captures for 'new' command (0 = disable)
+capture_interval: 30
+
+# Seconds to wait before the first background capture after 'new' starts.
+first_capture_delay: 5
+
+# Disable background capture entirely for 'new' command
+disable_capture: false
+
+# Only capture lines that newly appeared since the previous capture.
+# First capture always returns the full screen.
+diff_only: false
+
+# Diff algorithm when diff_only is true: "suffix" (default) or "index".
+diff_mode: suffix
+
+# Send only plain-text captures; omit ANSI escape codes from uploads.
+text_only: false
+
+# Maximum scrollback lines kept by the VT emulator.
+scrollback_lines: 1000
+
+# Allow starting a flashback-shell session inside another flashback-shell
+# session. The shell inside a session sets FLASHBACK_SHELL=1; by default
+# launching `new` while that variable is present is refused.
+allow_nested: false

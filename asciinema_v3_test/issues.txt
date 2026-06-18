@@ -1,0 +1,7 @@
+the server might know the history buffer
+
+it must rerender the entire virtual terminal when client reconnect?
+
+but it uses websocket to send to frontend asciinema player javascript, with o events and r events. can we translate it into tmux receiver with tmux resize command controlled externally? or just connect to the websocket and receive things, display them in commandline (abstract)?
+
+later we would use unix domain socket instead of websocket to prevent issues?

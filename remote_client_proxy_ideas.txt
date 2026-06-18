@@ -1,0 +1,7 @@
+perform mitm over ssh sessions and vnc sessions, act as a proxy and capture the output to server.
+
+ssh client -> ssh proxy -> ssh server
+                \-> terminal capture server
+
+vnc client -> vnc proxy -> server
+                \-> screenshot capture server

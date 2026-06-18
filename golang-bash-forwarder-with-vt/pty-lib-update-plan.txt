@@ -1,0 +1,124 @@
+# VT Emulator Analysis and Update Plan
+
+## Context
+
+`golang-bash-forwarder-with-vt` uses `github.com/charmbracelet/x/vt` (v0.0.0-20260615092313-b57e5e6d29bb) through a local replace at `reference/x-main/vt` to emulate a terminal and produce screen captures. The emulator is fed every byte that comes from the child PTY.
+
+A hang was observed when running `vim` inside the forwarder: the live terminal screen stayed blank while stdin still reached vim. Logging confirmed that `vtTerm.Write` blocked and never returned.
+
+## Root cause of the hang
+
+The `charmbracelet/x/vt` emulator is not a passive screen model; it maintains an **input pipe** (`e.pr`/`e.pw`) for terminal-generated replies. When vim queries the terminal for the current foreground/background colors with OSC sequences such as:
+
+```
+ESC ] 10 ; ? BEL   (query foreground color)
+ESC ] 11 ; ? BEL   (query background color)
+```
+
+the emulator's default handler (`vt/osc.go:handleDefaultColor`) constructs a reply and writes it to `e.pw`:
+
+```go
+io.WriteString(e.pw, ansi.SetForegroundColor(xrgb.String()))
+```
+
+Because the forwarder only **writes** to the emulator and never **reads** from `e.pr`, the pipe buffer eventually fills and the `WriteString` call blocks forever. That blocks the output goroutine, which blocks vim's stdout, so vim cannot draw the screen.
+
+This is a usage mismatch, not necessarily a parser bug: the emulator expects its input pipe to be consumed and forwarded back to the shell, which the forwarder does not do.
+
+## Current mitigation (already applied)
+
+The VT emulator is now fed asynchronously via a buffered channel with drop-on-full behavior, and each `vtTerm.Write` call is guarded by a 500 ms timeout. If a write hangs, the emulator is disabled and the channel is drained. This keeps the live terminal responsive but means captures are incomplete after a hang.
+
+## Can `reference/terminal-master/term.go` replace `x/vt`?
+
+**No, not as a direct drop-in replacement.**
+
+`reference/terminal-master/term.go` is part of `github.com/fyne-io/terminal`, a terminal **widget** for the Fyne GUI framework. It is built around:
+
+- `fyne.io/fyne/v2` widgets (`widget.BaseWidget`, `widget.TextGrid`, `canvas.Text`).
+- GUI event loops (`fyne.Do`, `fyne.DoAndWait`).
+- A full widget lifecycle with mouse, keyboard, focus, selection, and rendering.
+- Its own PTY abstraction (`startPTY`, `in`, `out`, `pty`).
+
+The parser in `terminal-master/output.go`, `escape.go`, `dcs.go`, and `osc.go` is straightforward and handles CSI, DCS, OSC, APC, and SOS sequences, but every parsed action is dispatched to the Fyne UI thread. There is no standalone screen buffer or ANSI renderer that can be used without Fyne.
+
+### Effort to adapt it
+
+To use `terminal-master` as a headless capture engine, we would need to:
+
+1. Strip all Fyne imports and UI code.
+2. Replace `widget.TextGrid` / `widget.TextGridRow` with a plain cell grid.
+3. Remove `fyne.Do` / `fyne.DoAndWait` calls.
+4. Implement ANSI rendering (`Render()`) because the reference only exposes `Text()`.
+5. Re-implement or adapt the alternate-screen-buffer logic.
+6. Provide a new API matching `vtcapture.Terminal`.
+
+This is a large rewrite — essentially porting the parser logic into a new package. It is not a simple library swap.
+
+## Options going forward
+
+### Option A: Keep `charmbracelet/x/vt` and consume its input pipe (recommended)
+
+The cleanest fix is to treat the emulator as a bidirectional device:
+
+- Continue writing child PTY output to `vtTerm.Write`.
+- Start a goroutine that reads from `vtTerm.Read()` (or `vtTerm.InputPipe()` reader) and writes those replies back to `ptmx`.
+
+This mirrors how a real terminal works: queries sent by the shell are answered by the emulator, and the answers go back to the shell.
+
+Pros:
+- Keeps the existing capture and rendering features.
+- No library change.
+- Fixes the root cause rather than working around it.
+
+Cons:
+- Adds one more goroutine and I/O direction to manage.
+- Must handle shutdown cleanly so the reply goroutine does not block.
+
+### Option B: Keep `charmbracelet/x/vt` and swallow OSC queries
+
+Register custom OSC handlers for commands 10, 11, 12, 110, 111, 112 that return `true` and do nothing. This prevents the default handler from writing to the input pipe.
+
+Pros:
+- Minimal code change.
+
+Cons:
+- vim will not receive color-query replies, which may cause subtle display issues.
+- Other query-style sequences may still hang.
+
+### Option C: Keep the current async+timeout mitigation
+
+The forwarder already does this. It is safe for the live terminal but sacrifices VT captures once a hang occurs.
+
+Pros:
+- Already implemented and tested.
+
+Cons:
+- Captures/logs may be truncated.
+- Does not fix the underlying issue.
+
+### Option D: Replace `x/vt` with a port of `terminal-master`
+
+Port the parser and screen model from `terminal-master` into a new headless package.
+
+Pros:
+- Full control over the emulator.
+- No input-pipe surprises.
+
+Cons:
+- Large engineering effort.
+- Must re-implement ANSI rendering, scrollback, and resize logic.
+- Risk of new parser bugs.
+
+## Recommendation
+
+1. **Short-term:** keep the async+timeout guard that is already in place so users cannot hang the live terminal.
+2. **Medium-term:** implement **Option A** — read from the emulator's input pipe and forward replies to `ptmx`. This is the correct architectural fix.
+3. **Do not pursue Option D** unless there is a strong reason to abandon `x/vt`, because porting `terminal-master` is a major project and does not obviously solve more problems than Option A.
+
+## Files involved
+
+- `golang-bash-forwarder-with-vt/pkg/vtcapture/vtcapture.go` — wrapper around `x/vt`.
+- `golang-bash-forwarder-with-vt/cmd/forwarder/main.go` — output goroutine that feeds the emulator.
+- `reference/x-main/vt/osc.go` — contains the blocking `io.WriteString(e.pw, ...)` replies.
+- `reference/terminal-master/term.go` and `output.go` — Fyne-based reference implementation.

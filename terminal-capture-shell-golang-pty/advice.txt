@@ -1,0 +1,1 @@
+first capture shall happen after x seconds, configurable in config and env, shall set to 1 by default.

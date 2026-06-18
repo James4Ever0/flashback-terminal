@@ -1,0 +1,288 @@
+# Plan: Terminal Capture Shell Rust — Standalone Rewrite
+
+## Goal
+
+Transform the existing Rust terminal-capture tool from a client/server Unix-socket
+architecture into a single-process standalone PTY wrapper, matching the CLI,
+config, and behavior of `terminal-capture-shell-golang-pty-standalone`.
+
+The new project will live under:
+
+    ./terminal-capture-shell-rust-standalone
+
+(copied and refactored from
+`terminal-capture-shell-golang-asciinema-event-receive-and-render/terminal-capture-shell-rust`).
+
+## High-level changes
+
+1. **Single-process `new`** — run the PTY directly in the foreground process,
+   no socket, no background `server` subcommand.
+2. **Drop commands** — remove `Capture`, `List`, `Kill`, and internal `Server`.
+   Keep only `new` and `check`.
+3. **Match Go CLI syntax** — global flags `-c`, `-v/-vv/-vvv`, `-l`,
+   `--no-capture`, `--allow-nested` before the subcommand; `new` flags
+   `--capture`, `--capture-text`, `--vt-log`, `--vt-log-interval`.
+4. **Match Go config file / env var model** — add `buffer_mode` and `buffer_dir`,
+   config provenance tracking for `check`, and auto-create a commented default
+   config file on first run.
+5. **Buffer behavior** — bounded retry queue kept in memory by default; optional
+   `disk` mode under a configurable parent directory (`/tmp` default). In memory
+   mode still uses a temp subfolder that is removed on exit (same as Go).
+6. **Preserve working pieces** — reuse the existing internal VT emulator
+   (`vt_capture` / `vt` modules), PTY spawn (`pty.rs`), TTY raw mode (`tty.rs`),
+   capture engine (`capture/engine.rs`), and HTTP upload client
+   (`server/client.rs`).
+
+## Files to create / keep / drop
+
+### New top-level layout
+
+```
+terminal-capture-shell-rust-standalone/
+├── Cargo.toml
+├── build.sh
+├── config.example.yaml
+├── src/
+│   ├── main.rs
+│   ├── cli.rs
+│   ├── config.rs
+│   ├── cmd/
+│   │   ├── new.rs
+│   │   ├── check.rs
+│   │   └── mod.rs
+│   ├── pty.rs
+│   ├── tty.rs
+│   ├── vt_capture.rs
+│   ├── vt/ ... (existing internal emulator)
+│   ├── capture/
+│   │   ├── mod.rs
+│   │   ├── engine.rs
+│   │   └── buffer.rs
+│   ├── server/
+│   │   └── client.rs   (upload only)
+│   └── log.rs
+```
+
+### Drop
+
+- `src/session/` — Unix socket session server no longer needed.
+- `src/protocol.rs` — socket protocol no longer needed.
+- `src/server/mod.rs` — only `client.rs` remains.
+- Capture/List/Kill/Server subcommands in `cli.rs` and `main.rs`.
+
+### Reuse mostly as-is
+
+- `src/vt/` and `src/vt_capture.rs`
+- `src/pty.rs`
+- `src/tty.rs`
+- `src/capture/engine.rs`
+- `src/capture/buffer.rs`
+- `src/server/client.rs`
+
+### Rewrite
+
+- `src/main.rs` — custom global flag parsing, dispatch to `cmd::new` / `cmd::check`.
+- `src/cli.rs` — reduced to the two public subcommands plus new flags.
+- `src/config.rs` — add `buffer_mode`/`buffer_dir`, source tracking, template
+  writing, env prefix `FLASHBACK_SHELL_PTY_`.
+- `src/cmd/new.rs` — new single-process PTY bridge with signals, resize,
+  background capture, final capture writes, VT log.
+- `src/cmd/check.rs` — dependency validation and provenance output.
+- `src/log.rs` — small synchronous leveled logger matching Go's logger API
+  (used instead of `tracing` to keep the standalone binary simple and to match
+  log-file semantics).
+
+## Detailed design
+
+### 1. CLI parsing (`src/main.rs` + `src/cli.rs`)
+
+`clap` derive does not handle `-vvv` naturally, and global flags must appear
+before the subcommand. Implement manual parsing in `main.rs` similar to the Go
+version:
+
+- Scan args for `-v`, `-vv`, `-vvv` to build a verbosity count.
+- Parse remaining args with a small hand-rolled loop for `-c`, `-l`,
+  `--no-capture`, `--allow-nested`.
+- The first positional argument is the subcommand (`new` or `check`).
+- Everything after the subcommand is passed to the subcommand parser.
+- For `new`, parse `--capture`, `--capture-text`, `--vt-log`,
+  `--vt-log-interval` from the front of the remaining args; stop at the first
+  non-flag or `--`.
+- Remaining positional args become shell arguments.
+
+### 2. Config (`src/config.rs`)
+
+Struct:
+
+```rust
+pub struct Config {
+    pub server_url: String,
+    pub shell: String,
+    pub buffer_size: usize,
+    pub buffer_mode: String,        // "memory" | "disk"
+    pub buffer_dir: PathBuf,        // parent dir for disk mode, default /tmp
+    pub device_id: String,
+    pub capture_interval: u64,
+    pub first_capture_delay: u64,
+    pub disable_capture: bool,
+    pub diff_only: bool,
+    pub diff_mode: DiffMode,        // existing enum
+    pub text_only: bool,
+    pub scrollback_lines: usize,
+    pub allow_nested: bool,
+}
+```
+
+Loading order (same as Go):
+
+1. Defaults
+2. YAML config file (`~/.config/terminal-capture-shell-pty.yaml`), with
+   explicit-field detection so only set fields update source tracking.
+3. Environment variables with prefix `FLASHBACK_SHELL_PTY_`.
+4. CLI overrides (`--no-capture`, `--allow-nested`).
+
+`Config::load(path, env_prefix)` returns `(Config, ConfigSources)`.
+`ConfigSources` records origin (`default`, `config`, `env`, `cli`) and string
+value for every field, used by `check`.
+
+`ensure_default_config()` creates `~/.config/` and writes a commented template
+if the file is missing.
+
+### 3. Logging (`src/log.rs`)
+
+Replace `tracing` with a tiny synchronous logger:
+
+- Levels: error (0), warn (1), info (2), debug (3).
+- Default destination: `~/.flashback-shell-pty/log/flashback-shell-pty.log`.
+- `-l -` or `-l /dev/stderr` → stderr.
+- `-l /dev/stdout` → stdout.
+- Mutex-protected `io::Write` implementation, calls `flush`/`sync` after each
+  line.
+
+This matches the Go logger and avoids the complexity of `tracing_subscriber`
+file rotation.
+
+### 4. `new` command (`src/cmd/new.rs`)
+
+Flow:
+
+1. Refuse nested sessions unless `allow_nested` is true and `FLASHBACK_SHELL`
+   is set.
+2. Determine shell binary (`config.shell > $SHELL > /bin/bash`).
+3. If no shell args provided, default to `["-l"]`.
+4. Spawn PTY with `pty::spawn`, set `FLASHBACK_SHELL=1`, ensure `TERM` is set.
+5. Create VT emulator sized from local terminal (`tty::DevTty` or stdin size).
+6. Enter raw mode on `/dev/tty` (or stdin if no `/dev/tty`).
+7. Spawn tasks/goroutines:
+   - **stdin -> PTY**: read `/dev/tty` (raw), write to PTY master.
+   - **PTY -> stdout + VT**: read PTY master, write to stdout, feed VT.
+   - **SIGWINCH handler**: resize PTY and VT.
+   - **Signal handler**: SIGINT, SIGTERM, SIGHUP trigger shutdown.
+   - **Background capture**: first capture after `first_capture_delay`, then
+     every `capture_interval`.
+   - **VT log** (optional): write ANSI snapshot to file every
+     `vt_log_interval`.
+8. Wait for child process exit or shutdown signal.
+9. Cancel capture context, wait for capture goroutine.
+10. Write optional final `--capture` / `--capture-text` files.
+11. Restore terminal, close PTY, exit with child status code.
+
+Use `tokio::select!` or blocking equivalents; because this is a single-process
+foreground tool, we can keep the existing async runtime but collapse the
+architecture.
+
+Important differences from current Rust:
+
+- No `Server::run`, no Unix listener, no socket guard.
+- PTY reads/writes happen directly, not through an intermediate socket.
+- Background capture is a task inside `new`, not a session-server task.
+- Final capture-on-exit flags are supported.
+
+### 5. `check` command (`src/cmd/check.rs`)
+
+Same as Go:
+
+- Print each config value with origin (`default`, `config`, `env`, `cli`).
+- Validate shell binary exists and is executable.
+- Open a PTY with a trivial `exit 0` command and report OK/FAIL.
+
+### 6. Buffer (`src/capture/buffer.rs`)
+
+Keep the JSONL-per-entry disk buffer, but add a memory mode:
+
+- `Buffer::new(dir, max_size)` for disk mode (existing behavior).
+- Add `MemoryBuffer` or make `Buffer` an enum with `Memory(Vec<Capture>)`.
+- Memory mode is selected when `buffer_mode == "memory"`.
+- In memory mode, store captures in a `VecDeque` / bounded `Vec` and drop oldest
+  when size exceeds `buffer_size`.
+- The Go standalone uses a temp directory even in memory mode; for Rust we will
+  keep captures purely in memory when `memory` is selected, which is simpler and
+  equivalent in behavior (buffer is lost on exit).
+
+Factory helper in `cmd/new.rs`:
+
+```rust
+fn new_retry_buffer(cfg: &Config) -> (RetryBuffer, Option<Box<dyn FnOnce()>>)
+```
+
+where `RetryBuffer` is an enum wrapping disk or memory. The optional cleanup
+function removes the temp directory for disk mode if a temp dir was created.
+
+### 7. Capture engine (`src/capture/engine.rs`)
+
+Reuse with one change: support an empty/in-memory `state_dir` so the engine can
+run without persisting hash/prev files across process restarts. Currently the
+engine always writes to `state_dir`; for standalone we can pass a temp dir or
+an empty optional state dir and keep dedup in memory.
+
+Pass `session_id = "main"`, `pane_id = "main"`, `target = "main"` for
+compatibility with the upload payload.
+
+### 8. Upload client (`src/server/client.rs`)
+
+Reuse mostly as-is. Add logging of skipped uploads when `server_url` is empty
+(matching Go's `ErrNoServerURL` behavior).
+
+### 9. Build script
+
+Add `build.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+echo "Building terminal-capture-shell-rust-standalone..."
+cargo build --release
+echo "Built: target/release/terminal-capture-shell-rust-standalone"
+```
+
+### 10. Config example
+
+Add `config.example.yaml` matching Go's example, using the same key names and
+comments.
+
+## Migration / copy steps
+
+1. Create `terminal-capture-shell-rust-standalone/`.
+2. Copy `Cargo.toml` and adjust package name and binary path.
+3. Copy `src/vt/`, `src/vt_capture.rs`, `src/pty.rs`, `src/tty.rs`,
+   `src/capture/`, `src/server/client.rs`.
+4. Write new `src/main.rs`, `src/cli.rs`, `src/config.rs`, `src/log.rs`,
+   `src/cmd/new.rs`, `src/cmd/check.rs`, `src/cmd/mod.rs`.
+5. Remove `src/session/`, `src/protocol.rs`, `src/server/mod.rs`.
+6. Add `build.sh`, `config.example.yaml`.
+7. Run `cargo check` and fix compilation errors.
+8. Run a smoke test: `./build.sh && ./target/release/... new` inside the repo.
+
+## Verification checklist
+
+- `cargo check` clean.
+- `cargo test` passes (existing VT / capture tests).
+- `new` starts a shell, echoes input, exits cleanly.
+- `--no-capture` disables background capture logging.
+- `--capture <file>` writes final ANSI on shell exit.
+- `--capture-text <file>` writes final text on shell exit.
+- `check` prints config origins and validates shell + PTY.
+- Config file is auto-created at `~/.config/terminal-capture-shell-pty.yaml`.
+- Nested session refusal works unless `--allow-nested`.
+- `FLASHBACK_SHELL_PTY_*` env vars override config file values.

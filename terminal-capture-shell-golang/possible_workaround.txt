@@ -1,0 +1,13 @@
+use pty to capture the terminal output, then mirror that output to a living tmux session (which receives the terminal output there, by socket? we might run `flashback-terminal receive xxx`), pass terminal resize events to that session, perform capture there. that way we might enjoy free scrollback features natively inside the terminal emulator and enjoy the tmux capture features.
+
+possible cavets:
+
+not all events can be mirrored? resize events? scrollback events? cursor movement events? etc. we'd need to figure out what events are possible to mirror and what events are not.
+
+references:
+
+reference/asciinema-develop/src/cli.rs
+
+reference/asciinema-develop/src/pty.rs
+
+reference/asciinema-develop/src/stream.rs

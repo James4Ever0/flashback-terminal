@@ -1,0 +1,3 @@
+according to the implementation of ../terminal-capture-shell-golang, implement a simple server receiving terminal capture requests from clients and display the terminal capture content to the terminal. make port and host configurable. only display the hash md5 and byte count, metadata like row count, column count( longest character count of every line), and client id/name, terminal id/name of the terminal capture content.
+
+use python with pinned version and package versions. specify it in requirements.txt

@@ -1,0 +1,253 @@
+# asciinema Implementation Analysis
+
+## What we asked for (from prompt.txt)
+
+1. Wrap a terminal program (bash, vim, ...) in a PTY.
+2. Read and write all bytes from/to it.
+3. Behave consistently with the terminal: escape sequences, resize, mouse, etc.
+4. Copy/forward the underlying program output to another socket.
+5. Buffer all output.
+6. Launch a read-only terminal program inside tmux to view/capture the output.
+7. Use a JSONRPC-like protocol, one line per event, to differentiate output from
+   special events (resize, mouse, ...).
+8. Handle resize and mouse events.
+9. Provide build script, test script, documentation.
+
+## How asciinema implements each area
+
+asciinema is a Rust project. The relevant files are:
+
+- `src/cli.rs` — command-line interface for `record`, `stream`, `session`, etc.
+- `src/pty.rs` — PTY creation and async I/O.
+- `src/session.rs` — main stdin/stdout/PTY/signal loop.
+- `src/stream.rs` — in-memory event stream and VT emulator state.
+- `src/forwarder.rs` — WebSocket forwarding to a remote server.
+- `src/server.rs` — local HTTP/WebSocket server for local streaming.
+- `src/alis.rs` — ALiS wire protocol.
+- `src/tty.rs` — raw terminal mode helpers.
+
+### 1. PTY wrapping
+
+File: `src/pty.rs`
+
+asciinema uses `nix::pty::forkpty` to fork a child process with a PTY:
+
+- Parent receives the PTY master fd and the child PID.
+- The master fd is wrapped in `tokio::io::unix::AsyncFd` for non-blocking async
+  read/write.
+- Child calls `execvp` with the requested command (default `$SHELL`).
+- Extra environment variables (e.g., `ASCIINEMA_SESSION`) are set in the child
+  before `execvp`.
+- `Pty::read` and `Pty::write` perform `unistd::read`/`write` on the fd.
+- `Pty::resize` calls `ioctl(fd, TIOCSWINSZ, &winsize)`.
+- `Pty::kill` sends `SIGTERM` to the child.
+- `Pty::wait` calls `waitpid` in a `spawn_blocking` task.
+
+Key detail: asciinema does **not** use a portable high-level PTY crate like
+`ptyprocess`; it goes straight to `nix` for control over fork, fd, and signals.
+
+### 2. Read/write all bytes
+
+File: `src/session.rs`
+
+The core loop is a `tokio::select!` over four producers/consumers:
+
+- `pty.read(&mut output_buf)` — output from the PTY.
+- `tty.read(&mut input_buf)` — input from the user's terminal.
+- `pty.write(&input)` — sending buffered input to the PTY.
+- `tty.write(&output)` — sending buffered output to the user's terminal.
+- `signals.next()` — SIGWINCH, SIGINT, SIGTERM, SIGQUIT, SIGHUP, SIGALRM,
+  SIGCHLD.
+
+Everything is byte-oriented. Output bytes are pushed to a `BytesMut` and then
+to `tty.write`. Input bytes are pushed to another `BytesMut` and then to
+`pty.write`. There is no interpretation of the byte stream in this loop; that
+happens later in `handle_output`.
+
+### 3. Consistent terminal behavior
+
+File: `src/tty.rs` and `src/tty/default.rs` / `src/tty/macos.rs`
+
+- The real terminal (`/dev/tty` on Linux, direct fd on macOS) is switched to
+  raw mode with `cfmakeraw` + `tcsetattr`.
+- `RawTty` trait abstracts `get_size`, `read`, `write`.
+- Terminal size is read with `ioctl(TIOCGWINSZ)`.
+- `SIGWINCH` triggers `pty.resize(winsize)` and a `Resize` event.
+- The PTY child gets the same `TERM` and `COLORTERM` environment as the parent,
+  so the wrapped program sees a normal terminal.
+
+Mouse: asciinema does **not** have explicit mouse-event forwarding. Mouse
+sequences from the terminal are read as raw input bytes, passed to the PTY, and
+(optionally) recorded as `Input` events. The application inside the PTY decides
+whether to enable mouse reporting; if it does, the resulting output bytes are
+mirrored to the user and to the stream. In other words, mouse support is handled
+transparently as part of the byte stream, not as a separate side channel.
+
+### 4. Forward output to a socket
+
+Files: `src/stream.rs`, `src/forwarder.rs`, `src/server.rs`
+
+Events produced by `session.rs` are sent to a channel. `forward_events` clones
+each event to every registered `Output` implementation.
+
+`stream::Stream` is one such output. It:
+
+- Receives `Output`, `Input`, `Resize`, `Marker`, `Exit` events.
+- Feeds output bytes into an `avt::Vt` (a terminal emulator) to keep a live
+  screen state.
+- Broadcasts typed `stream::Event` values to subscribers.
+
+For **remote** streaming (`asciinema stream --remote`):
+
+- `forwarder::forward` subscribes to the stream.
+- It opens a WebSocket to the asciinema server.
+- `alis::stream` encodes events into binary ALiS messages.
+- The forwarder handles reconnect with exponential backoff and sends WebSocket
+  pings.
+
+For **local** streaming (`asciinema stream --local`):
+
+- `server::serve` starts an axum HTTP server.
+- Static assets (the player HTML/JS) are embedded with `rust_embed`.
+- `/ws` upgrades to a WebSocket and subscribes to the stream.
+
+So asciinema forwards events, not raw socket bytes, and it uses WebSocket
+(rather than a plain Unix/TCP socket) as the transport.
+
+### 5. Buffering output
+
+File: `src/stream.rs`
+
+Buffering happens in two ways:
+
+1. **Broadcast buffer**: `tokio::sync::broadcast` channel with capacity 1024.
+   Late subscribers miss dropped events but can still join the live stream.
+2. **VT state / Init event**: The stream keeps an `avt::Vt` emulator. When a new
+   subscriber connects, it sends an `Init` event containing:
+   - last event id
+   - elapsed time
+   - current terminal size
+   - color theme
+   - a full screen dump from the VT (`vt.dump()`)
+   This lets a late viewer start from the current screen instead of an empty
+   terminal.
+
+For persistent buffering, the `session` and `record` commands write to a file
+(asciicast v3) via `src/file_writer.rs` and `src/asciicast.rs`.
+
+### 6. Read-only terminal inside tmux
+
+asciinema does **not** implement this directly. Its "receiver" is the web
+player (browser) connected via HTTP/WebSocket. However, the same event stream
+could drive a terminal-based receiver:
+
+- A receiver program could connect to the local WebSocket or to a Unix socket.
+- It would decode ALiS (or JSON-RPC in our project) events.
+- It would write output bytes to its own terminal and apply resize events.
+- Running that receiver inside tmux would give tmux native scrollback and
+  `capture-pane` for free.
+
+This is the gap our project should fill.
+
+### 7. Protocol: JSONRPC vs ALiS
+
+File: `src/alis.rs`
+
+asciinema uses **ALiS** (asciinema live stream), a binary protocol over
+WebSocket, not JSON-RPC. Each event is a WebSocket binary message:
+
+- `0x01` — Init event (id, time, cols, rows, theme, seed screen)
+- `'o'` (0x6f) — Output (id, relative time, text)
+- `'i'` (0x69) — Input (id, relative time, text)
+- `'r'` (0x72) — Resize (id, relative time, cols, rows)
+- `'m'` (0x6d) — Marker (id, relative time, label)
+- `'x'` (0x78) — Exit (id, relative time, status)
+- `0x04` — EOT / stream end
+
+Integers are encoded as LEB128. Times are relative microseconds.
+
+Our project, per the prompt, should use a line-delimited JSON-RPC-like protocol
+instead. We can keep the same event taxonomy but encode each event as one JSON
+object per line.
+
+### 8. Resize and mouse events
+
+**Resize**: fully implemented.
+
+- `SIGWINCH` -> `tty.get_size()` -> `pty.resize(winsize)` ->
+  `Event::Resize(...)` -> broadcast.
+- The VT emulator is resized with `vt.resize(cols, rows)`.
+- Remote/local players receive the `Resize` event and resize their display.
+
+**Mouse**: not implemented as a separate event type.
+
+- Mouse input is treated as raw terminal input bytes.
+- If the application enables mouse reporting (e.g., `\x1b[?1003h`), the
+  terminal sends X10/SGR mouse sequences, which are forwarded to the PTY.
+- The PTY application's output changes are then captured as normal `Output`
+  events.
+- If our project needs explicit `mouse` JSON-RPC events, we would have to parse
+  X10/SGR sequences from the input stream ourselves. asciinema does not do this.
+
+### 9. Build / test / docs
+
+Files: `Cargo.toml`, `build.rs`, tests inside source files.
+
+- asciinema is a Cargo project; no separate `build.sh` is needed.
+- Unit tests exist in `pty.rs`, `alis.rs`, `tty.rs`, `forwarder.rs`.
+- There is no dedicated `test.sh`; `cargo test` is used.
+- Documentation is in the CLI help strings (`cli.rs`) and on the asciinema
+  website.
+
+Our project (Go) should provide `build.sh`, `test.sh`, and `README.md` as
+required by the prompt.
+
+## Lessons for our Go implementation
+
+1. **Use a typed event bus** like asciinema's `session::Event` / `stream::Event`.
+   This separates raw I/O from forwarding/capture logic and makes it easy to
+   add multiple outputs.
+
+2. **Keep a VT emulator in the forwarder** so new receivers can receive a seed
+   screen (`Init` event) instead of starting from scratch. In Go we can use a
+   VT library (e.g., `github.com/asciinema/vt-go` if available) or write a
+   minimal one for the tmux-receiver use case.
+
+3. **Resize is a first-class event**. We should emit a `resize` JSON-RPC event
+   and also resize the receiver's terminal/tmux pane.
+
+4. **Mouse can stay byte-transparent** for the first version, matching
+   asciinema. If we later need explicit mouse events, we can parse X10/SGR
+   sequences and emit `mouse` events, but the receiver inside tmux will likely
+   ignore them anyway because tmux can handle mouse reporting itself.
+
+5. **Don't require WebSocket**. asciinema uses WebSocket because it targets a
+   browser player. Our target is a local tmux receiver, so a Unix domain socket
+   (or TCP socket) with newline-delimited JSON is simpler and matches the
+   prompt.
+
+6. **Support multiple outputs from the start**. asciinema's `Vec<Box<dyn Output>>`
+   pattern lets the same session record to a file, stream locally, and stream
+   remotely simultaneously. We can do the same in Go with a slice of `Writer`
+   or channel consumers.
+
+7. **Use raw terminal mode and SIGWINCH**. In Go: `golang.org/x/term.MakeRaw`,
+   `unix.IoctlGetWinsize`, `unix.IoctlSetWinsize`, and `signal.Notify` for
+   `SIGWINCH`.
+
+8. **Clean up on signals**. asciinema kills the PTY child on SIGINT/SIGTERM.
+   We should do the same and also close sockets/remove Unix sockets.
+
+## Conclusion
+
+asciinema implements roughly 80% of what the prompt asks for:
+
+- PTY wrapping, byte-level I/O, terminal consistency, resize handling, event
+  streaming, buffering via VT state, and multiple outputs are all production
+  quality.
+- It does **not** provide a tmux-based read-only receiver, does **not** use
+  JSON-RPC, and does **not** emit explicit mouse events.
+
+Our plan should borrow asciinema's event model and raw-terminal handling, but
+replace WebSocket/ALiS with a line-delimited JSON-RPC stream over a Unix socket,
+and add a receiver designed to run inside tmux.

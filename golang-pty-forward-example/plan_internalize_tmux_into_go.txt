@@ -1,0 +1,214 @@
+# Plan: Internalize tmux-like Rendering into the Forwarder
+
+## User's actual requirement (clarified)
+
+The user wants **one** program that behaves like a normal shell (`bash`) in a
+terminal emulator (Konsole) and can also:
+
+- Launch `vim` and other interactive programs.
+- Use Konsole's native scrollback buffer as the local scrollback.
+- Launch another `tmux` session and, from within tmux, receive all terminal
+events/output from the first shell over a socket.
+- Have full control over terminal resize behavior.
+
+The user is asking whether they must:
+
+1. Run tmux headlessly and resize it externally, or
+2. Internalize tmux's rendering logic (rewrite it as a Go library), or
+3. Write the whole thing in C, or
+4. Find an existing Go equivalent of tmux.
+
+The clean answer: **you do not need to internalize tmux or rewrite it**. You
+also do not need to run tmux headlessly and fight its size externally. The
+existing architecture already supports the desired workflow with a small change
+in how the receiver is launched.
+
+---
+
+## Recommended architecture (no tmux internalization needed)
+
+```
+Konsole (terminal emulator)
+    |
+    +-- local PTY with raw mode + SIGWINCH
+    |
+    v
++-------------------+
+|  forwarder        |
+|  (your Go program)|
+|  - runs bash      |
+|  - mirrors bytes  |
+|  - emits events   |
++-------------------+
+        |
+        | Unix socket / TCP
+        v
++-------------------+
+|  receiver         |
+|  (your Go program)|
++-------------------+
+        |
+        v
+    tmux pane/session (running the receiver)
+```
+
+Workflow:
+
+1. Open Konsole.
+2. Run `forwarder --listen /tmp/pty.sock bash` inside Konsole.
+   - This gives you a normal bash shell with Konsole scrollback and full vim
+     support.
+3. Open another Konsole/tab.
+4. Run `tmux new-session './receiver /tmp/pty.sock'`.
+   - The tmux pane now displays a read-only mirror of the first shell.
+   - Resize the tmux pane/window normally and the receiver handles resize
+     events.
+
+This satisfies all stated requirements without internalizing tmux.
+
+---
+
+## Why internalizing tmux is the wrong path
+
+`tmux` is not just a terminal renderer. It is:
+
+- A full terminal multiplexer with sessions, windows, panes.
+- A job control system.
+- A client/server architecture over a Unix socket.
+- A VT parser, screen grid (`grid.c`), input parser (`input.c`), redraw engine
+  (`screen-redraw.c`, `tty.c`), and key/mouse translator.
+- A configuration language, status bar, copy mode, etc.
+
+Internalizing it would mean re-implementing tens of thousands of lines of C and
+years of edge-case fixes. The user only needs:
+
+- A shell that forwards events.
+- A viewer that receives those events inside tmux.
+
+These are much smaller problems.
+
+---
+
+## What about a Go tmux equivalent?
+
+There is no mature, drop-in Go equivalent of tmux. Existing Go terminal
+multiplexers are either experimental or abandoned. Rewriting tmux in Go would
+still be a massive project.
+
+Better alternatives:
+
+1. **Keep tmux as the viewer** (recommended).
+2. **Use a Go VT emulator + render directly to a second terminal**.
+3. **Use `screen`, `zellij`, or `wezterm` as the viewer** if you want different
+   feature sets.
+
+---
+
+## What the existing implementation already does
+
+The `golang-pty-forward-example` currently has:
+
+- `forwarder` -> wraps bash in a PTY, forwards bytes locally, emits JSON-RPC
+  events.
+- `receiver` -> connects to a socket and writes output bytes to its stdout.
+- `logger` -> human-readable event viewer.
+
+To use it as requested:
+
+```bash
+# Terminal 1 (Konsole)
+./bin/forwarder --listen /tmp/mirror.sock bash
+
+# Terminal 2 (Konsole, inside tmux)
+tmux new-session -s mirror './bin/receiver /tmp/mirror.sock'
+```
+
+Resize either terminal and `SIGWINCH` / `resize` events keep the PTY and the
+receiver's ANSI resize sequence in sync.
+
+---
+
+## Gaps in the current implementation that need fixing
+
+1. **Receiver output is not read-only**
+   - The receiver currently writes everything to stdout, but stdin keystrokes
+     from the tmux pane are ignored by the receiver process (it has no stdin
+     reader). This is effectively read-only, but we should make it explicit and
+     drain stdin to avoid accidental flow-control issues.
+
+2. **Mouse and focus events**
+   - Mouse is currently byte-transparent through the PTY, which is correct for
+     Konsole -> bash -> vim. The receiver inside tmux will receive the same
+     output bytes and tmux will handle its own mouse. No extra work needed.
+
+3. **VT seed screen is empty**
+   - The `init` event has an empty `screen` field. A late receiver will see only
+     new output. For full mirroring, we should add a minimal VT emulator in the
+     forwarder to produce a seed screen. This is phase 5 of the original plan.
+
+4. **Receiver should honor resize events via both ANSI and TIOCSWINSZ**
+   - Currently it emits `CSI 8 ; rows ; cols t`. Some terminals ignore that.
+     Add `ioctl(TIOCSWINSZ)` on the receiver's stdout fd when possible.
+
+5. **Socket lifecycle**
+   - If the forwarder exits, the receiver should exit cleanly. It currently
+     returns on EOF. Good enough.
+
+---
+
+## Suggested minimal next steps
+
+1. Add an explicit `--read-only` flag to `receiver` that drains stdin and
+   ignores it.
+2. Implement a tiny VT emulator in `pkg/vt` so `init.screen` is populated.
+3. Improve `receiver` resize handling with `TIOCSWINSZ`.
+4. Add a `tmux-mirror.sh` convenience script:
+
+   ```bash
+   #!/usr/bin/env bash
+   SOCK="/tmp/mirror-${1:-default}.sock"
+   tmux has-session -t mirror 2>/dev/null || \
+     tmux new-session -d -s mirror -x 80 -y 24 "./bin/receiver $SOCK"
+   tmux attach -t mirror
+   ```
+
+5. Document the Konsole + tmux two-terminal workflow in `README.md`.
+
+---
+
+## If you really want to internalize rendering (do not recommend)
+
+Only consider this if you need to remove tmux as a dependency entirely. The path
+would be:
+
+1. Embed a Go VT emulator (`github.com/asciinema/vt-go` if maintained, or write
+   one).
+2. Maintain a virtual screen grid of cells with attributes.
+3. Render the grid to the second terminal with ANSI updates, or use a UI
+   library (`tcell`, `termui`, `bubbletea`) to draw it.
+4. Handle window resizing, scrollback, mouse, and copy mode yourself.
+
+This is essentially rewriting a subset of tmux. It is weeks of work for no clear
+benefit over running the receiver inside tmux.
+
+---
+
+## Language recommendation
+
+**Stay in Go.**
+
+The task is I/O-bound and event-driven. Go's goroutines, channels, and
+`golang.org/x/term` make the forwarder/receiver small and portable. C would give
+you lower-level control but at the cost of memory safety, build complexity, and
+much more code. Since you only need to *use* tmux, not replace it, Go is the
+right layer.
+
+---
+
+## Summary
+
+You do not need to internalize tmux, run it headlessly, or rewrite it in Go or
+C. Launch `forwarder` in Konsole for your interactive shell, then run `receiver`
+inside a tmux session in another terminal to view the mirror. The current code
+already supports this; it only needs minor polish (read-only flag, VT seed
+screen, better resize) to be smooth.

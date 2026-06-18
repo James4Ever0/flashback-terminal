@@ -1,0 +1,1 @@
+tmux new-session './bin/receiver /tmp/pty.sock'

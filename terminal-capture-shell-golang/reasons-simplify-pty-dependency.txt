@@ -1,0 +1,40 @@
+# Why PTY Dependency Was Removed
+
+## What Was Proposed
+
+The original plan included a PTY (pseudo-terminal) fork-and-proxy layer:
+- Fork a PTY in Go
+- Run `tmux attach` in the PTY slave
+- Manually copy bytes between `os.Stdin`/`os.Stdout` and the PTY master fd
+- Use `golang.org/x/term` for raw mode and terminal resize handling
+
+## Why This Is Unnecessary
+
+1. **The user's terminal is already a terminal.** Tmux knows how to speak TTY protocol natively. Inserting a PTY shim between the user's terminal and tmux adds zero value — we are not intercepting, modifying, or logging the byte stream in real time.
+
+2. **Capture is done out-of-band.** We capture terminal content via `tmux capture-pane` (a separate tmux subcommand), not by snooping PTY traffic. The PTY layer would not help with capture.
+
+3. **The `exec` syscall already solves this.** On Unix, `execve` replaces the current process with a new one while inheriting the same file descriptors (stdin/stdout/stderr). The child process (tmux or shell) talks directly to the user's terminal. No proxying code needed.
+
+4. **Go's `os/exec` is sufficient for the non-exec case.** Even if we want to keep the Go process alive (e.g., to clean up the tmux session after detach), `cmd.Stdin = os.Stdin`, `cmd.Stdout = os.Stdout`, `cmd.Stderr = os.Stderr` does exactly what we need — the child inherits the parent's terminal.
+
+5. **Less code, fewer deps.** Removing PTY logic eliminates:
+   - `golang.org/x/term` dependency
+   - Raw mode setup/teardown
+   - SIGWINCH forwarding code
+   - Goroutine pairs for bidirectional I/O copying
+   - Terminal state restoration on exit
+
+## What Replaces It
+
+For `flashback-shell new`:
+1. Create tmux session detached via `exec.Command(...).Run()`
+2. Run `tmux attach` with inherited stdio: `cmd.Run()` blocks until the user exits
+3. On return, kill the tmux session
+
+For plain-shell fallback:
+1. Find shell binary
+2. `exec.Command(shell, args...)` with inherited stdio
+3. `cmd.Run()` blocks until shell exits
+
+Or even simpler: use `syscall.Exec` to replace the Go process entirely with the shell/tmux. Zero proxy code. The OS handles everything.

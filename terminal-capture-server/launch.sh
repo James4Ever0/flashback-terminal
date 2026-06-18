@@ -1,0 +1,1 @@
+/home/jamesbrown/Desktop/works/terminal-searcher/.venv/bin/python3 main.py --log-requests

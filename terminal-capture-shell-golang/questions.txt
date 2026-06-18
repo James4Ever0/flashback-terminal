@@ -1,0 +1,1 @@
+where is the "default" log file? is it logged per created session? is it related to the randomly created session name? or is it a global log file?

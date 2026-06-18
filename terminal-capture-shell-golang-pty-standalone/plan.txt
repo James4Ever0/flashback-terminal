@@ -1,0 +1,281 @@
+# Plan: Simplify flashback-shell-pty to a standalone PTY forwarder
+
+## Goal
+
+Remove the client/server split and session-management surface from
+`terminal-capture-shell-golang-pty`. The tool should become a single-process
+PTY wrapper: it starts a shell, mirrors the local terminal, runs an internal
+VT emulator, optionally captures/uploads the screen, and exits when the shell
+exits. No external program can inspect the terminal view, no session sockets
+are created, and no session list is maintained.
+
+## What is removed
+
+### Commands
+
+- `capture` — there are no managed sessions to enumerate and no socket API.
+- `list` — there is no session directory or session registry.
+- `kill <id>` — there are no external session sockets to connect to.
+
+### Packages / files
+
+- `cmd/server.go` and the `__server` subcommand.
+- `cmd/capture.go`
+- `cmd/list.go`
+- `cmd/kill.go`
+- `pkg/session/server.go`
+- `pkg/session/client.go`
+- `pkg/session/protocol.go`
+- `pkg/session/discover.go`
+- `pkg/session/` directory (delete the whole package).
+
+### Config options
+
+- `socket_dir` and `FLASHBACK_SHELL_PTY_SOCKET_DIR`.
+- Keep `buffer_size` and `FLASHBACK_SHELL_PTY_BUFFER_SIZE`: it bounds the
+  upload retry queue in both memory and disk modes.
+- Add `buffer_mode` / `FLASHBACK_SHELL_PTY_BUFFER_MODE`:
+  - `"memory"` (default) — retry batches are kept in memory only.
+  - `"disk"` — retry batches are spilled to a temporary subfolder/file under
+    the configured `buffer_dir`. The temporary storage is removed when the
+    process exits.
+- Add `buffer_dir` / `FLASHBACK_SHELL_PTY_BUFFER_DIR`:
+  - Parent directory used only when `buffer_mode: disk`.
+  - Default: `/tmp` (cleared on reboot by the OS; perfect for ephemeral retry
+    batches).
+  - The process creates a unique subfolder or temp file inside this location
+    (e.g. `/tmp/.flashback-shell-pty-<pid>-<random>/`) and defers its removal
+    on exit.
+
+### Local directories
+
+- `~/.flashback-shell-pty/sockets/` — no longer created.
+- `~/.flashback-shell-pty/state/` — no longer used for per-session hashes.
+- `~/.flashback-shell-pty/buffer/` — not created. With `buffer_mode: disk`, the
+  default parent location is `/tmp`; the actual working directory is a temporary
+  subfolder that is deleted on exit.
+
+Only the config directory (`~/.config/`) and the log directory
+(`~/.flashback-shell-pty/log/`) remain.
+
+## What is kept
+
+- `new [args...]` — start a shell inside a PTY. This becomes the primary, and
+  eventually only, interactive command.
+- `check` — validate shell/PTY availability and show effective config.
+- PTY creation via `pkg/ptywrap`.
+- Raw terminal mode via `pkg/rawmode`.
+- VT emulator via `pkg/vtcapture` (`charmbracelet/x/vt`).
+- Background capture and upload (optional, toggled by config).
+- `pkg/capture` for diff/hash/transform logic, trimmed to a single-screen API.
+- `pkg/server` upload client.
+- Logging via `pkg/log`.
+- Config loading via `pkg/config`.
+
+## New architecture
+
+`flashback-shell-pty new` runs as a single process:
+
+```
+┌─────────────────────────────────────────────┐
+│ flashback-shell-pty new                     │
+│                                             │
+│  stdin ──► PTY master ──► shell             │
+│    ▲                         │              │
+│    │                         ▼              │
+│  stdout ◄── raw bytes ◄── PTY master        │
+│                                             │
+│  All PTY output is also fed into            │
+│  pkg/vtcapture (VT emulator).               │
+│                                             │
+│  Optional background goroutine:             │
+│  capture ANSI/text, deduplicate, upload.    │
+└─────────────────────────────────────────────┘
+```
+
+No Unix socket, no session server, no second process, no external observers.
+
+## File-level changes
+
+### main.go
+
+- Remove `capture`, `list`, `kill`, `__server` cases from the command switch.
+- Remove `SocketDir` from printed config/env help.
+- Simplify usage text to only `new` and `check`.
+
+### cmd/new.go
+
+Replace the current implementation (which forks `__server` and attaches over a
+Unix socket) with a single-process PTY forwarder similar to
+`golang-bash-forwarder-with-vt/cmd/forwarder/main.go`:
+
+1. Parse config, resolve shell.
+2. Refuse nested sessions unless `allow_nested` is true (`FLASHBACK_SHELL`).
+3. Start the shell with `ptywrap.Start`.
+4. Create `vtcapture.NewTerminal` and set scrollback.
+5. If stdin is a terminal, enter raw mode and start SIGWINCH forwarding.
+6. Spawn goroutines:
+   - `stdin -> PTY`
+   - `PTY -> stdout` and `PTY -> VT emulator`
+7. Wait for shell exit or SIGINT/SIGTERM.
+8. On exit, flush final captures if requested, clean up raw mode, exit with
+   the shell's exit code.
+
+Add CLI flags for local diagnostics (not external APIs):
+
+- `--capture <path>` — write final ANSI screen capture on exit.
+- `--capture-text <path>` — write final plain-text screen capture on exit.
+- `--vt-log <path>` — continuously dump the VT screen to a file.
+- `--vt-log-interval <duration>` — dump interval (default `2s`).
+
+These write to files specified by the user; they are not sockets and do not
+expose an RPC interface.
+
+### cmd/server.go
+
+Delete.
+
+### cmd/capture.go, cmd/list.go, cmd/kill.go
+
+Delete.
+
+### cmd/check.go
+
+Keep, but remove `socket_dir` and all diff/capture-specific fields from the
+printed config. Keep `buffer_size`, `buffer_mode`, and `buffer_dir`. Validate
+shell and PTY only.
+
+### pkg/session/*
+
+Delete the entire `pkg/session/` directory. No replacement.
+
+### pkg/config/config.go
+
+- Remove `SocketDir` from `Config`, `FileConfig`, and `ConfigWithSource`.
+- Keep `BufferSize`.
+- Add `BufferMode` (string, default `"memory"`) and `BufferDir` (string,
+  default `~/.flashback-shell-pty/buffer`) to `Config`, `FileConfig`, and
+  `ConfigWithSource`.
+- Update `defaultConfig()`, `applyYAML()`, `applyEnvOverrides()`, and the
+  default template to drop `socket_dir` and add the new buffer fields.
+- Keep: `ServerURL`, `Shell`, `BufferSize`, `BufferMode`, `BufferDir`,
+  `DeviceID`, `CaptureInterval`, `DisableCapture`, `DiffOnly`, `DiffMode`,
+  `TextOnly`, `ScrollbackLines`, `AllowNested`.
+
+### pkg/capture/*
+
+Simplify:
+
+- Remove `CaptureAll` and any socket-dependent functions.
+- Keep single-screen capture helpers and diff/hash/transform logic.
+- The background capture goroutine will call the VT emulator directly and
+  upload via `pkg/server` client.
+
+### pkg/server/client.go
+
+Keep the upload client. Introduce a small buffer backend interface with two
+implementations:
+
+- `memoryBuffer` — bounded in-memory queue sized by `buffer_size`.
+- `diskBuffer` — spills batches to a temporary subfolder/file under
+  `buffer_dir`, still bounded by `buffer_size`. The temporary path is created
+  at startup and removed via `defer` when the process exits.
+
+On upload failure, enqueue the batch; on success, flush the queue. If the queue
+exceeds `buffer_size`, drop the oldest batch and log a warning. No persistent
+state survives process exit.
+
+### pkg/vtcapture, pkg/ptywrap, pkg/rawmode, pkg/log
+
+No structural changes; keep as-is.
+
+### README.md
+
+Rewrite:
+
+- Remove `capture`, `list`, `kill` from quick-start and command table.
+- Explain that `new` is a single-process PTY wrapper.
+- Remove socket/session directories from the local-directories table.
+- Update config/env documentation to drop removed fields.
+
+### build.sh / test.sh
+
+- Update tests to exercise the single-process `new` command directly.
+- Remove socket-based tests.
+- Add tests for `--capture`, `--capture-text`, and `--vt-log`.
+
+## CLI after simplification
+
+```
+flashback-shell-pty new [flags] [command [args...]]
+flashback-shell-pty check
+flashback-shell-pty -h
+```
+
+Global flags remain:
+
+- `-c <path>` — config file.
+- `-v`, `-vv`, `-vvv` — verbosity.
+- `-l <path>` — log file.
+- `--no-capture` — disable background capture for this session.
+- `--allow-nested` — allow nested flashback-shell sessions.
+
+`new`-specific flags:
+
+- `--capture <path>` — final ANSI capture.
+- `--capture-text <path>` — final text capture.
+- `--vt-log <path>` — continuous VT screen dump.
+- `--vt-log-interval <duration>`.
+
+## Config after simplification
+
+```yaml
+server_url: ""
+shell: ""
+buffer_size: 100
+buffer_mode: memory
+buffer_dir: "/tmp"
+device_id: ""
+capture_interval: 30
+disable_capture: false
+diff_only: false
+diff_mode: suffix
+text_only: false
+scrollback_lines: 1000
+allow_nested: false
+```
+
+Environment variables drop `FLASHBACK_SHELL_PTY_SOCKET_DIR`; keep
+`FLASHBACK_SHELL_PTY_BUFFER_SIZE` and add:
+
+- `FLASHBACK_SHELL_PTY_BUFFER_MODE`
+- `FLASHBACK_SHELL_PTY_BUFFER_DIR`
+
+## Implementation order
+
+1. Delete `cmd/capture.go`, `cmd/list.go`, `cmd/kill.go`, `cmd/server.go`,
+   and the whole `pkg/session/` directory.
+2. Rewrite `cmd/new.go` as a single-process PTY forwarder with VT capture and
+   the new `--capture`, `--capture-text`, `--vt-log` flags.
+3. Update `main.go` to remove the deleted commands and update usage.
+4. Trim `pkg/config/config.go`, `config.example.yaml`, and `cmd/check.go`.
+5. Trim `pkg/capture/` to a single-screen API.
+6. Refactor `pkg/server/client.go` to support pluggable retry backends:
+   bounded in-memory (`buffer_mode: memory`) and temporary disk
+   (`buffer_mode: disk` under `buffer_dir`), both limited by `buffer_size`.
+   Ensure the disk backend cleans up its temp subfolder/file on exit.
+7. Rewrite `README.md`.
+8. Update `build.sh` and `test.sh`.
+9. Build and run tests; fix compile errors.
+
+## Verification
+
+- `go build ./...` succeeds.
+- `./test.sh` passes.
+- `flashback-shell-pty new bash -c 'echo hello'` prints `hello` and exits.
+- `flashback-shell-pty new --capture out.ansi --capture-text out.txt bash -c 'echo hi'`
+  writes `hi` into both files.
+- `flashback-shell-pty new --vt-log vt.log bash -c 'echo line1; sleep 1; echo line2'`
+  writes multiple screen snapshots to `vt.log`.
+- No socket files are created under `~/.flashback-shell-pty/sockets/`.
+- `flashback-shell-pty check` still validates shell and PTY.

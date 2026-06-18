@@ -1,0 +1,9 @@
+read rust source code at: terminal-capture-shell-golang-asciinema-event-receive-and-render/terminal-capture-shell-rust
+
+now change the rust code base into standalone, socket free executable just like the following go code, with similar cli and config syntax: terminal-capture-shell-golang-pty-standalone
+
+plan first. then code.
+
+write your plan at change_cli_syntax_plan.txt
+
+then code under ./<some_proper_name>

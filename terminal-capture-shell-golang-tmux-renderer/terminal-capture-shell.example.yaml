@@ -1,0 +1,43 @@
+# terminal-capture-shell configuration
+# Copy this file to ~/.config/terminal-capture-shell.yaml and adjust as needed.
+# Environment variables override values in this file.
+
+# Remote server URL for uploading captures (empty = local only)
+server_url: ""
+
+# Directory where tmux renderer sockets and forwarder sockets are stored
+socket_dir: "~/.flashback-shell/tmux"
+
+# Shell binary (empty = $SHELL or /bin/bash)
+shell: ""
+
+# Maximum buffered capture batches kept for retry
+buffer_size: 100
+
+# Device identifier sent with uploads (empty = hostname)
+device_id: ""
+
+# Seconds between background captures for 'new' command (0 = disable)
+capture_interval: 30
+
+# Disable background capture entirely for 'new' command
+disable_capture: false
+
+# Capture the full tmux scrollback buffer instead of only the visible pane
+capture_scrollback: false
+
+# Only capture lines that newly appeared since the previous capture.
+# First capture always returns the full buffer/screen.
+diff_only: false
+
+# Diff algorithm used when diff_only is true.
+#   "suffix" (default) - find the longest overlapping suffix/prefix and return
+#                      the trailing new lines. Best for ring-like scrollback.
+#   "index"            - align previous and current buffers by index, trim or
+#                      pad the top, and return only changed lines. Best for
+#                      in-place screen updates.
+diff_mode: suffix
+
+# Send only plain text captures; omit ANSI escape codes from uploads.
+# The server receives metadata.ansi=false when this is enabled.
+text_only: false

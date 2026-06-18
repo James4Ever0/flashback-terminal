@@ -1,0 +1,254 @@
+# Answers: VT emulator scope, difficulty of tmux rendering rewrite, and what to build
+
+## 1. Is `pkg/vt` an internalized terminal renderer to replace tmux?
+
+No. In the original plan `pkg/vt` was only a **small VT emulator inside the
+forwarder** whose job is to consume output bytes and produce a *seed screen*
+(snapshot). It does not replace tmux. Its purpose is:
+
+- Allow a late `receiver` to start from the current screen instead of a blank
+  terminal.
+- Optionally support dumping the current screen as ANSI or plain text.
+- Stay invisible to the user running bash/vim in Konsole.
+
+It does **not** handle input multiplexing, panes, windows, status bars, copy
+mode, or persistent scrollback the way tmux does. It is a renderer/parser, not a
+multiplexer.
+
+---
+
+## 2. Is rewriting only tmux's terminal rendering part hard?
+
+It is **medium-hard**, not trivial, but much smaller than full tmux. The
+critical pieces are:
+
+| Piece | File(s) in tmux | What it does | Difficulty |
+|-------|-----------------|--------------|------------|
+| ANSI/UTF-8 input parser | `input.c` | Turns byte stream into cell ops | Medium |
+| Screen grid | `grid.c`, `screen.c` | 2D array of cells + attributes | Medium |
+| Redraw / update scheduling | `screen-redraw.c`, `tty.c` | Diff grid and emit minimal ANSI | Hard |
+| Terminal capability database | `tty-term.c`, `tty-features.c` | Map terminfo/caps to sequences | Tedious |
+| Mouse / focus / key encoding | `input-keys.c`, `tty-keys.c` | Translate events | Medium |
+| Resize handling | many files | Reflow or truncate grid | Hard |
+| Scrollback buffer | `grid.c` | History + search | Medium |
+
+If you strip away tmux's multiplexer features (sessions, panes, windows,
+commands, status bar, copy mode), the remaining rendering engine is still a few
+thousand lines of C. Reimplementing just that in Go is doable but has many
+edge cases:
+
+- Unicode wide characters, combining characters, zero-width joiners.
+- SGR attributes (bold, dim, italic, underline, colors, 256/truecolor).
+- Scroll regions, alternate screen, erase modes.
+- DCS/APC/OSC sequences (window titles, hyperlinks, sixel images).
+- Reflowing on resize (tmux reflows; many simpler emulators truncate).
+
+So: **not rocket science, but a lot of careful work**.
+
+---
+
+## 3. What you actually want
+
+From your clarification, you want the **forwarder itself** to know what the
+terminal looks like from the user's side. Specifically:
+
+- Internally render terminal output sequences.
+- Fixed buffer line limit (scrollback).
+- Always consistent with cursor position.
+- ANSI-sequence representable.
+- Able to produce:
+  - ANSI terminal capture (like `tmux capture-pane -e`).
+  - Plain text capture (like `tmux capture-pane -p`).
+
+This is exactly a **VT emulator + screen grid + cursor tracker** living inside
+the forwarder. You do not need tmux's multiplexer; you only need its
+*screen/grid* and *input parser* layers.
+
+---
+
+## 4. Recommended design: Go VT emulator inside the forwarder
+
+### Architecture
+
+```
+Konsole
+   |
+   v
+forwarder (Go)
+   |
+   +-- PTY master + bash/vim
+   |
+   +-- VT emulator (pkg/vt)
+   |       |
+   |       +-- screen grid (cols x rows + scrollback)
+   |       +-- cursor position
+   |       +-- current attributes
+   |       +-- parser state machine
+   |
+   +-- event bus (existing)
+   |
+   +-- capture API
+           |
+           +-- ANSI dump of current screen + scrollback
+           +-- plain text dump
+           +-- current cursor position
+```
+
+### What `pkg/vt` should do
+
+1. **Parse incoming output bytes** and update internal state:
+   - Printable characters -> write to grid at cursor, advance cursor.
+   - Cursor movement (CUP, CUU, CUD, CUF, CUB, etc.).
+   - Erase (EL, ED, clear screen).
+   - Scroll (SU, SD, scroll region).
+   - Attributes (SGR).
+   - Resize (DECCOLM, SIGWINCH-driven).
+   - Mode switches (alternate screen, cursor visibility).
+
+2. **Maintain a grid**:
+   - Primary screen + scrollback history up to a fixed line limit.
+   - Alternate screen (no scrollback).
+   - Each cell holds rune, width, and attributes.
+
+3. **Provide dump functions**:
+   - `DumpANSI() []byte` — reconstruct an ANSI representation of the screen.
+   - `DumpText() []byte` — reconstruct plain text.
+   - `Capture(lines int) []byte` — capture last N lines including scrollback.
+   - `Cursor() (row, col int)`.
+
+4. **Feed events into the bus**:
+   - The forwarder feeds every output byte into `pkg/vt`.
+   - On subscriber connect, the `init` event carries the current ANSI dump.
+
+### Output capture without tmux
+
+Because the forwarder now has an internal VT state, you can expose capture
+without a separate receiver:
+
+```go
+// Inside forwarder or via a small HTTP/gRPC/Unix command:
+vt.DumpANSI()   // tmux capture-pane -e equivalent
+vt.DumpText()   // tmux capture-pane -p equivalent
+```
+
+You could also add a subcommand or signal:
+
+```bash
+# Dump current screen to a file
+kill -USR1 $(pidof forwarder)  # writes /tmp/forwarder.capture.ansi
+```
+
+or a Unix control socket:
+
+```bash
+./bin/forwarder --control /tmp/ctrl.sock ...
+echo "capture" | nc -U /tmp/ctrl.sock
+```
+
+---
+
+## 5. Should you write it in Go or C?
+
+**Go is fine.**
+
+The VT emulator is CPU-light for normal terminal use. A Go implementation with a
+byte-level state machine and a 2D grid is perfectly fast enough. The only reason
+to use C would be:
+
+- You want to literally fork tmux's code.
+- You need extreme performance (e.g., 4K video over sixel).
+
+Neither applies here. Go gives you memory safety, easier testing, and the rest
+of your project is already Go.
+
+---
+
+## 6. Existing Go libraries that can help
+
+| Library | Notes |
+|---------|-------|
+| `github.com/asciinema/vt-go` | Small VT emulator from asciinema. May be unmaintained but a good reference. |
+| `github.com/joefitzgerald/standard-widgets` | Higher-level widgets, not useful here. |
+| `github.com/gdamore/tcell` | Terminal UI library with a screen buffer, but oriented toward building UIs, not emulating arbitrary output. |
+| `github.com/charmbracelet/bubbletea` | Same; too high-level. |
+| `github.com/muesli/termenv` | ANSI styling helpers, not a VT emulator. |
+
+Likely you will end up writing most of `pkg/vt` yourself, borrowing ideas from
+`vt-go` or tmux's `input.c`/`grid.c`.
+
+---
+
+## 7. Revised implementation plan
+
+### Phase A: VT emulator foundation
+
+1. Create `pkg/vt` with:
+   - `Cell` struct (rune, width, attrs).
+   - `Grid` struct (lines of cells, cursor row/col, scrollback limit).
+   - `Vt` struct with parser state.
+2. Implement parser for the most common sequences:
+   - printable characters, tab, newline, carriage return, backspace
+   - CUP, CUU, CUD, CUF, CUB, CNL, CPL, CHA, CUP/HVP
+   - ED, EL, IL, DL, SU, SD
+   - SGR (colors, bold, italic, underline, reverse)
+   - DECSTBM (scroll region)
+   - SM/RM (alternate screen, cursor visibility)
+3. Add `Vt.Write(p []byte)` to feed output bytes.
+4. Add `Vt.Resize(cols, rows)`.
+5. Add `Vt.DumpANSI()` and `Vt.DumpText()`.
+
+### Phase B: Integrate into forwarder
+
+1. Instantiate a `vt.Vt` in `cmd/forwarder`.
+2. Feed every PTY output byte into it.
+3. On local `SIGWINCH`, resize the VT and emit a `resize` event.
+4. Populate the `init` event's `screen` field from `Vt.DumpANSI()`.
+5. Add `--scrollback N` flag to set the line limit.
+
+### Phase C: Capture API
+
+1. Add a control socket (`--control`) or signal handler.
+2. Support commands:
+   - `capture ansi` -> ANSI dump
+   - `capture text` -> plain text dump
+   - `capture lines N` -> last N lines
+   - `cursor` -> row/col
+
+### Phase D: Receiver improvements
+
+1. Use the `init` screen snapshot to seed late receivers.
+2. Add `--read-only` flag to drain and ignore stdin.
+3. Add `TIOCSWINSZ` resize on the receiver's stdout fd.
+
+### Phase E: Tests and docs
+
+1. Unit tests for `pkg/vt` with canned ANSI sequences.
+2. Integration test: run `bash -c 'echo hello; tput setaf 1; echo red'` and
+   verify `DumpANSI` contains both text and color sequences.
+3. Document the new capture commands and Konsole workflow.
+
+---
+
+## 8. Trade-offs
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Keep tmux as viewer | Fastest, full features | Requires tmux, less control |
+| Go VT emulator in forwarder | No tmux needed, captures on demand, integrates cleanly | Must implement/refine VT parser |
+| Rewrite tmux rendering in C | Can reuse tmux logic | Large C codebase, memory-unsafe, hard to test |
+
+---
+
+## 9. Recommendation
+
+Build the Go VT emulator inside `pkg/vt`. It directly satisfies your clarified
+requirements:
+
+- forwarder knows what the terminal looks like,
+- fixed scrollback line limit,
+- consistent cursor position,
+- ANSI representable,
+- `capture-pane`-like ANSI and text dumps.
+
+Keep the option to also run a `receiver` inside tmux for live viewing, but do
+not depend on tmux for capture.

@@ -1,0 +1,1 @@
+flashback-shell-new is more secure than flashback-shell since its url is configured only by environment variables, but more complex to configure per app.

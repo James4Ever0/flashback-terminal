@@ -2,6 +2,9 @@
 # Python
 # =============================================================================
 # Byte-compiled / optimized / DLL files
+vim.log.30
+log.*
+reference
 
 logs/*
 log.txt

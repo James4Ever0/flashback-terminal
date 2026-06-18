@@ -1,0 +1,1 @@
+did you implement the logging plan at golang-pty-forward-example and golang-bash-forwarder-with-vt? also i need an extra enter to get the underlying process exited, so what is wrong? why python3 can exit cleanly without extra enter? also did you fix the exit signal or when underlying bash shell is done the outer forwarder process is blocking issue in golang-pty-forward-example?

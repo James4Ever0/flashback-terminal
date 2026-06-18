@@ -1,0 +1,265 @@
+# Terminal Capture Shell (Go) — Implementation Plan
+
+## Overview
+
+A lightweight Go CLI executable that wraps terminal sessions inside tmux (with fallback to plain shell), captures terminal content from all panes/sessions, and sends captures to a remote server. Designed to be simple, statically linkable, and free of session restore / env capture complexity.
+
+Reference: flashback-terminal Python codebase for tmux/screen interaction patterns, capture worker logic, and ANSI→screenshot rendering pipeline.
+
+---
+
+## Design Principles
+
+1. **Minimal** — No session restore, no env capturing, no web terminal, no websockets.
+2. **Tmux-first** — Use tmux for session management and capture; fall back to plain shell if tmux unavailable.
+3. **Kill on death** — If the underlying shell process exits, the wrapper exits. No resurrection logic.
+4. **Same CWD** — New shell starts in the current working directory.
+5. **Static-friendly** — Pure Go + stdlib where possible; single binary.
+
+---
+
+## CLI Subcommands
+
+### `flashback-shell new [args...]`
+- Check if `tmux` is in `$PATH`.
+  - **Yes**: Start a new tmux session (detached, custom socket in `~/.flashback-shell/tmux/`).
+    - Set working directory = current working directory of the CLI process.
+    - Pass any extra `[args...]` to the subshell.
+    - Run `tmux attach` as a subprocess with inherited stdin/stdout/stderr.
+    - Wait for the child process to exit (shell dies).
+    - Kill the tmux session and exit.
+  - **No**: Print a hint (`tmux not found in PATH. Install: sudo apt-get install tmux ...`).
+    - Find `sh` or `bash` in `$PATH` (fallback chain: `$SHELL` → `bash` → `sh`).
+    - Run the found shell as a subprocess with inherited stdio.
+    - Wait for exit.
+
+### `flashback-shell capture`
+- Discover all tmux sessions managed by flashback-shell (scan `~/.flashback-shell/tmux/` for sockets).
+- For each session, for each pane:
+  - Run `tmux capture-pane -p -e -t <target>` to get ANSI content.
+  - Run `tmux capture-pane -p -t <target>` to get plain text.
+  - Compute MD5 hash of the ANSI content.
+  - **Deduplication**: Skip if hash matches the last-known hash for that pane (kept in a small in-memory LRU or simple map file in `~/.flashback-shell/state/`).
+  - If changed (or new), add to capture batch.
+- Send the batch to the remote server via HTTP POST (JSON or multipart).
+- Keep a small circular buffer of recent captures locally (optional, configurable) for offline resilience.
+
+### `flashback-shell list`
+- List all managed tmux sessions and their panes (name, PID, socket path, pane count).
+
+### `flashback-shell kill <session-id>`
+- Kill a specific tmux session by its flashback-shell ID.
+
+---
+
+## Directory Layout
+
+```
+terminal-capture-shell-golang/
+├── go.mod
+├── main.go              // CLI entrypoint (cobra or stdlib flags)
+├── cmd/
+│   ├── new.go           // "new" subcommand
+│   ├── capture.go       // "capture" subcommand
+│   ├── list.go          // "list" subcommand
+│   └── kill.go          // "kill" subcommand
+├── pkg/
+│   ├── shell/
+│   │   ├── finder.go    // Locate sh/bash/tmux in PATH
+│   │   └── tmux.go      // Tmux session lifecycle (start, attach, kill, capture)
+│   ├── capture/
+│   │   ├── capture.go   // Capture logic (capture-pane, hash, dedup)
+│   │   └── buffer.go    // Local circular buffer
+│   ├── server/
+│   │   └── client.go    // HTTP client for remote upload
+│   └── config/
+│       └── config.go    // Config struct, env vars, defaults
+└── plan.txt             // This file
+```
+
+---
+
+## Key Components
+
+### 1. Shell Finder (`pkg/shell/finder.go`)
+
+Functions:
+- `HasTmux() bool` — `exec.LookPath("tmux")`
+- `FindFallbackShell() (string, error)` — Try `$SHELL`, then `bash`, then `sh` via `exec.LookPath`.
+- `PrintTmuxInstallHint()` — Print OS-specific install command to stderr.
+
+### 2. Tmux Manager (`pkg/shell/tmux.go`)
+
+Inspired by `flashback_terminal/session_manager.py::TmuxSession`.
+
+Responsibilities:
+- **Socket dir**: `~/.flashback-shell/tmux/`
+- **Session naming**: `flashback-<uuid>`
+- **Start session** (detached):
+  ```
+  tmux -S <socket> new-session -d -s <name> -n main \
+       -e TERM=xterm-256color \
+       "cd <cwd> && exec <shell> <args>"
+  ```
+  Then configure kiosk mode (`status off`, `mouse off`, `unbind-key C-b`).
+- **Attach to session**: Run `tmux -S <socket> attach` as a subprocess with inherited stdin/stdout/stderr. The user's terminal talks directly to tmux.
+- **Kill session**: `tmux -S <socket> kill-session -t <name>`
+- **Capture pane**: `tmux -S <socket> capture-pane -p -e -t <name>:0.0`
+- **List panes**: `tmux -S <socket> list-panes -t <name> -F '#{pane_id}'`
+- **isRunning**: `tmux -S <socket> has-session -t <name>` + socket file existence check.
+
+### 3. Capture Engine (`pkg/capture/capture.go`)
+
+- Walk the socket directory to find all flashback sessions.
+- For each session, list panes.
+- For each pane, capture ANSI + plain text.
+- Compute MD5 hash per pane.
+- Compare against `~/.flashback-shell/state/<session>-<pane>.hash`.
+  - If match → skip (no change).
+  - If different (or no state file) → include in batch, write new hash.
+- Return a `[]Capture` slice for upload.
+
+### 4. Remote Upload (`pkg/server/client.go`)
+
+- Configurable remote server URL (env var or flag).
+- POST `/api/captures` with JSON body:
+  ```json
+  {
+    "device_id": "...",
+    "timestamp": "...",
+    "captures": [
+      {
+        "session_id": "...",
+        "pane_id": "...",
+        "ansi": "...",
+        "text": "...",
+        "hash": "...",
+        "cols": 80,
+        "rows": 24
+      }
+    ]
+  }
+  ```
+- Simple retry with exponential backoff on network failure.
+- Optional: if upload fails, store to local circular buffer for later retry.
+
+### 5. Local State / Buffer (`pkg/capture/buffer.go`)
+
+- Directory: `~/.flashback-shell/state/`
+- Stores last-seen hash per pane (tiny text files).
+- Circular buffer: N most recent failed uploads as JSON files, deleted after successful retry.
+
+---
+
+## Data Flow
+
+### `new` command flow
+
+```
+User runs: flashback-shell new
+  │
+  ├─ Has tmux?
+  │   ├─ Yes ──► Create detached tmux session (custom socket, cwd, shell+args)
+  │   │          Configure kiosk mode
+  │   │          Run "tmux attach" with inherited stdio
+  │   │          Wait for child exit
+  │   │          Kill tmux session
+  │   │          Exit
+  │   │
+  │   └─ No  ──► Print install hint
+  │              Find fallback shell ($SHELL / bash / sh)
+  │              Run shell with inherited stdio
+  │              Exit on shell death
+```
+
+### `capture` command flow
+
+```
+User runs: flashback-shell capture
+  │
+  ├─ Scan ~/.flashback-shell/tmux/ for sockets
+  │
+  ├─ For each session:
+  │     For each pane:
+  │        Capture ANSI + text
+  │        Compute MD5
+  │        Compare with last known hash
+  │        If changed → add to batch
+  │
+  ├─ If batch not empty:
+  │     POST to remote server
+  │     On success → update hash files
+  │     On failure → write to local retry buffer
+  │
+  └─ Exit
+```
+
+---
+
+## Configuration
+
+Environment variables:
+- `FLASHBACK_SHELL_SERVER` — Remote server URL for uploads.
+- `FLASHBACK_SHELL_SOCKET_DIR` — Override tmux socket directory.
+- `FLASHBACK_SHELL_SHELL` — Override shell binary.
+- `FLASHBACK_SHELL_BUFFER_SIZE` — Max local retry buffer entries (default 100).
+
+No config file for simplicity. Flags for subcommands.
+
+---
+
+## Dependencies
+
+Go modules (keep minimal):
+- `github.com/spf13/cobra` (optional, can use stdlib `flag` to avoid deps).
+
+No PTY library needed. See `reasons-simplify-pty-dependency.txt`.
+
+No database. No async framework. No web server.
+
+---
+
+## Process Lifecycle Rules
+
+1. **Shell dies → wrapper dies**: No restart, no restore, no env saving.
+2. **Ctrl-C / SIGINT**: Sent directly to the child process. Wrapper exits when shell exits.
+3. **Terminal resize**: Tmux handles this natively since it owns the terminal directly.
+4. **Tmux not found**: Graceful fallback to plain shell with a printed hint.
+
+---
+
+## Simplifications vs flashback-terminal
+
+| Feature | flashback-terminal | flashback-shell (this plan) |
+|---------|-------------------|----------------------------|
+| Language | Python (asyncio) | Go (sync + goroutines) |
+| Terminal backend | Tmux + Screen + Local PTY | Tmux only (fallback: direct shell exec) |
+| Session restore | Yes (socket check + revive) | No — kill on death |
+| Web UI | Yes (FastAPI + WebSocket) | No |
+| Database | SQLite (async) | No database (state files only) |
+| Screenshot render | agg_python_bindings | Offloaded to remote server |
+| Env capture | Yes | No |
+| Workers | Background async tasks | CLI-driven, no daemon |
+
+---
+
+## Open Questions / Future Work
+
+1. **Screenshot rendering**: Should the Go binary render ANSI→PNG locally (would need CGO or WASM agg), or should the remote server handle all rendering? Plan: remote server renders; Go binary only captures and uploads text/ANSI.
+2. **Continuous capture**: Should `new` also spawn a background capture loop? Simpler: user runs `capture` separately (cron, or tmux send-keys inside the session). Or add a `--capture-interval` flag to `new` that forks a background capture goroutine.
+3. **Authentication**: Bearer token for remote uploads? Add `--token` flag or read from env.
+4. **Cross-pane capture**: Should we capture all panes in all windows, or just window 0? Start with window 0 only; expand if needed.
+
+---
+
+## Implementation Order
+
+1. **Bootstrap**: `go mod init`, main.go with stdlib flags (no cobra yet).
+2. **Shell finder + fallback**: `pkg/shell/finder.go` — detect tmux, find fallback shell.
+3. **`new` command (plain shell fallback)**: Run shell with inherited stdio, wait for exit.
+4. **`new` command (tmux path)**: Start detached tmux, run `tmux attach` with inherited stdio, kill on exit.
+5. **`list` command**: Scan socket dir, parse tmux output.
+6. **`kill` command**: Kill session by ID.
+7. **`capture` command**: Capture all panes, hash, dedup.
+8. **Remote upload**: HTTP client, retry, local buffer.
+9. **Polish**: Install hints, tests.

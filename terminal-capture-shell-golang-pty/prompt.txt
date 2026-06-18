@@ -1,0 +1,8 @@
+replace the original tmux based session launcher with pty based terminal render and proxy.
+
+follow similar commandline syntax though, remove unnecessary flags. only implement feasible flags and commands.
+
+reference:
+
+terminal-capture-shell-golang
+golang-bash-forwarder-with-vt

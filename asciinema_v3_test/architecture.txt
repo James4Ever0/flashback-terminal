@@ -1,0 +1,15 @@
+a python script, first create a unix domain socket, then spawn a detached subprocess tmux new session without status bar with a process receiving and displaying bytes from a unix domain socket, resize it externally via tmux shell commands.
+
+how to display bytes from that socket? use python script or cat?
+
+how to send and receive bytes? how to issue resize command? use asyncio subprocess? run_in_executor? reference: flashback_terminal/session_manager.py
+
+about how to create that tmux session, read terminal-capture-shell-golang
+
+you do not display or attach to the tmux session. you only periodically audit and capture the tmux session content and output it to stdout. log byte count, changed or not.
+
+you first attach to the websocket, then perform actions to the tmux session, log things, then exit if connection closed.
+
+about things received from websocket, refer to ./connect_to_websocket.py
+
+create file ./asciinema_stream_to_tmux_and_capture_headless.py

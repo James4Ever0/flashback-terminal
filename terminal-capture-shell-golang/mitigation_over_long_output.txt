@@ -1,0 +1,3 @@
+use nested tmux session, then use copy mode to scroll through history
+
+use less to get file content, press G to go to end of file, press slash to search, press n to go to next match, press q to quit

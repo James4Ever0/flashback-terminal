@@ -1,0 +1,12 @@
+modify source code of asciinema, to support unix domain socket streaming
+
+then write golang code to receive events from the socket and render its output to a tmux session
+
+reference:
+
+reference/asciinema-develop
+asciinema_v3_test/asciinema_stream_to_tmux_and_capture_headless.py
+
+also think if we can just simply use pure rust to realize the whole thing, render the internal terminal view, and submit it to a remote server periodically by config.
+
+create a separate command for this, or just create a separate binary tool, with different command and syntax. similar to: terminal-capture-shell-golang

@@ -1,0 +1,3 @@
+learn about first capture delay from folder terminal-capture-shell-golang-pty and only change code at terminal-capture-shell-golang-pty-standalone for implementing that feature and nothing else.
+
+learn about first capture delay from folder terminal-capture-shell-golang-pty and only change code at terminal-capture-shell-golang-asciinema-event-receive-and-render/terminal-capture-shell-rust for implementing that feature and nothing else.

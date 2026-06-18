@@ -1,0 +1,3 @@
+still the pty standalone cannot use vim?
+
+also seems that we can forward input sequence from the tmux receiver to the actual shell program or just receive raw ansi bytes and provide some simple api or tooling for constructing ansi sequences?

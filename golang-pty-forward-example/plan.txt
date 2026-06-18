@@ -1,0 +1,370 @@
+# Updated Implementation Plan: golang-pty-forward-example
+
+## Objective
+
+Build a self-contained Go example that:
+
+1. Wraps an interactive terminal program (`bash`, `vim`, etc.) in a PTY.
+2. Reads and writes all bytes to/from that program.
+3. Keeps the user's terminal and the wrapped program consistent: escape
+   sequences, terminal size, mouse input, etc.
+4. Forwards a stream of typed terminal events to a consumer over a Unix socket
+   (or TCP).
+5. Buffers output and can seed a late consumer with the current screen state.
+6. Provides a read-only receiver that can run inside `tmux` to display and
+   capture the mirrored terminal.
+7. Uses a line-delimited JSON-RPC-like protocol so the receiver can distinguish
+   output from resize and other special events.
+8. Includes build, test, and documentation deliverables.
+
+This plan is updated based on the asciinema codebase analysis in
+`asciinema-analysis.txt`. We borrow asciinema's event taxonomy and raw-terminal
+handling, but replace WebSocket/ALiS with a simpler JSON-RPC stream over a local
+socket and add a tmux-friendly receiver.
+
+## Architecture
+
+```
+User terminal (raw mode)
+        ^
+        | raw bytes
+        v
++---------------------------+
+| pty-forwarder             |
+|  - PTY master             |
+|  - shell on PTY slave     |
+|  - stdin  -> PTY          |
+|  - PTY    -> stdout       |
+|  - events -> socket bus   |
++---------------------------+
+        |
+        | line-delimited JSON events
+        v
++---------------------------+
+| Unix/TCP socket           |
++---------------------------+
+        |
+        +--> file logger (optional)
+        +--> tmux receiver (read-only)
+        +--> debug logger
+```
+
+## Components
+
+### 1. `pty-forwarder` (`cmd/forwarder`)
+
+The main binary. Responsibilities:
+
+- Parse CLI: target command (default `bash`), listen address, optional log file,
+  headless mode.
+- Allocate a PTY for the target command with `github.com/creack/pty`.
+- Put the local terminal into raw mode with `golang.org/x/term`.
+- Start the target command on the PTY slave.
+- Run the IO loop:
+  - `stdin`  -> PTY master.
+  - PTY master -> `stdout` (so the user still sees the program).
+  - PTY master -> event bus.
+- On `SIGWINCH`:
+  - Read the new terminal size (`TIOCGWINSZ`).
+  - Resize the PTY (`TIOCSWINSZ`).
+  - Emit a `resize` event.
+- Decode output bytes as UTF-8 (best-effort) and emit `output` events.
+- Optionally capture input bytes as `input` events.
+- Emit `exit` and `eof` events when the shell exits.
+- Clean up PTY, restore terminal, close socket, remove Unix socket file on
+  exit/signal.
+
+### 2. Event bus (`pkg/event`)
+
+A typed event model borrowed from asciinema:
+
+```go
+type Event struct {
+    ID   uint64
+    Time time.Duration // elapsed microseconds since session start
+}
+
+type OutputEvent struct { Event; Data string }
+type InputEvent  struct { Event; Data string }
+type ResizeEvent struct { Event; Cols, Rows uint16 }
+type MarkerEvent struct { Event; Label string }
+type ExitEvent   struct { Event; Status int }
+type EofEvent    struct { Event }
+```
+
+The bus:
+
+- Receives events from the forwarder.
+- Feeds output data into a VT emulator to maintain the current screen state.
+- Broadcasts events to all connected subscribers.
+- On new subscriber connection, sends an `init` event containing:
+  - current terminal size
+  - color theme (optional)
+  - a seed screen dump from the VT emulator
+  - last event id and elapsed time
+
+This lets a late tmux receiver start from the current screen instead of a blank
+terminal.
+
+### 3. JSON-RPC line protocol (`pkg/protocol`)
+
+One JSON object per line (`\n`). Example events:
+
+```json
+{"method":"init","id":0,"time":0,"params":{"cols":80,"rows":24,"theme":null,"screen":"..."}}
+{"method":"output","id":1,"time":12345,"params":{"data":"base64(...)"}}
+{"method":"input","id":2,"time":12350,"params":{"data":"base64(...)"}}
+{"method":"resize","id":3,"time":23456,"params":{"cols":100,"rows":30}}
+{"method":"marker","id":4,"time":34567,"params":{"label":"checkpoint"}}
+{"method":"exit","id":5,"time":45678,"params":{"status":0}}
+{"method":"eof","id":6,"time":45678,"params":{}}
+```
+
+Rules:
+
+- `data` fields are base64-encoded to safely carry binary terminal bytes.
+- `time` is elapsed microseconds since session start.
+- `id` is monotonically increasing so receivers can detect gaps.
+- The protocol is transport-agnostic (Unix socket, TCP, pipe).
+
+Why not ALiS? The prompt explicitly asks for a JSON-RPC-like, line-delimited
+protocol. ALiS is binary and WebSocket-oriented.
+
+### 4. VT emulator (`pkg/vt` or third-party)
+
+To support the `init` seed screen, we need a small terminal emulator:
+
+- Option A: Use an existing Go VT library (e.g., `github.com/asciinema/vt-go`
+  if available and maintained).
+- Option B: Write a minimal VT that understands the most common ANSI sequences
+  (cursor movement, colors, erase, scroll, alternate screen). This is enough
+  for a seed screen used by a tmux receiver.
+
+The emulator only needs to:
+
+- Accept output bytes.
+- Track cursor position and cell attributes.
+- Resize the grid.
+- Produce a dump of the current screen (and optionally scrollback).
+
+### 5. `tmux-receiver` (`cmd/receiver`)
+
+A read-only receiver designed to run inside tmux:
+
+- Connects to the forwarder socket.
+- Reads JSON events.
+- On `init`: writes the seed screen to its terminal.
+- On `output`: decodes base64 and writes bytes to stdout.
+- On `resize`: emits ANSI `CSI 8 ; rows ; cols t` and/or resizes via
+  `SIGWINCH`/`TIOCSWINSZ`.
+- On `input`/`marker`/`exit`/`eof`: logs or ignores, depending on use case.
+- Runs until `eof` or connection loss.
+
+When started inside tmux:
+
+```bash
+tmux new-session -s mirror "./tmux-receiver /tmp/pty.sock"
+```
+
+tmux will treat the receiver pane as a normal terminal with full scrollback
+history. `tmux capture-pane` can then capture the mirrored content.
+
+### 6. `event-logger` (`cmd/logger`)
+
+A debug tool that connects to the socket and prints each JSON event in a
+human-readable form. Useful for verifying resize/mouse/output forwarding without
+a receiver.
+
+### 7. Library packages
+
+- `pkg/ptywrap`
+  - `Start(cmd *exec.Cmd) (*os.File, *exec.Cmd, error)` — start command with PTY.
+  - `Resize(ptmx *os.File, rows, cols uint16) error`.
+  - `SetSize(rows, cols uint16)` helper.
+
+- `pkg/rawmode`
+  - `MakeRaw(fd int) (restore func(), state *term.State, err error)`.
+  - `Restore(fd int, state *term.State) error`.
+
+- `pkg/event`
+  - Event types, bus, subscriber handling, VT integration.
+
+- `pkg/protocol`
+  - `Encode(event) ([]byte, error)`.
+  - `Decode(line []byte) (Event, error)`.
+
+- `pkg/receiver`
+  - `RenderLoop(reader, stdout)` — apply events to a terminal.
+
+## Implementation phases
+
+### Phase 1: PTY passthrough (no forwarding yet)
+
+1. Create `cmd/forwarder` that:
+   - Spawns `bash` on a PTY.
+   - Copies stdin -> PTY and PTY -> stdout.
+   - Uses `golang.org/x/term.MakeRaw` for the local terminal.
+2. Verify `bash` and `vim` run correctly.
+3. Add `SIGWINCH` handling that resizes the PTY.
+
+### Phase 2: Event bus and JSON-RPC protocol
+
+1. Define event types in `pkg/event`.
+2. Add a simple event bus with Go channels.
+3. Implement JSON encoding/decoding in `pkg/protocol`.
+4. Modify the forwarder to emit `output`, `resize`, `exit`, and `eof` events.
+5. Add `cmd/logger` to print events.
+
+### Phase 3: Socket forwarding
+
+1. Add `--listen` flag (Unix socket path or `host:port`).
+2. Start a listener in the forwarder.
+3. For each accepted connection, subscribe it to the event bus.
+4. Send the `init` event to new subscribers with current VT dump.
+5. Verify `logger` sees events over the socket.
+
+### Phase 4: tmux receiver
+
+1. Implement `cmd/receiver`.
+2. Connect to socket, decode events, write output bytes to stdout.
+3. Apply `resize` events via ANSI resize sequence or `TIOCSWINSZ`.
+4. Run receiver inside tmux and verify the screen matches.
+5. Verify `tmux capture-pane` captures the mirrored content.
+
+### Phase 5: Buffering and seed screen
+
+1. Integrate a VT emulator into the event bus.
+2. Feed every `output` event into the VT.
+3. Generate the seed screen for the `init` event from the VT dump.
+4. Add an optional `--snapshot` flag to persist recent events to disk.
+
+### Phase 6: Mouse and focus (optional)
+
+1. Enable mouse reporting (`\x1b[?1003h`) on the local terminal.
+2. Parse X10/SGR mouse sequences from the input stream.
+3. Emit `mouse` JSON-RPC events.
+4. Decide whether the receiver inside tmux needs to act on them; likely it can
+   ignore them because tmux handles its own mouse input.
+
+Focus events can be handled similarly if needed.
+
+### Phase 7: Build, test, and documentation
+
+1. Replace `build.sh` with a proper script that builds `forwarder`, `receiver`,
+   and `logger`.
+2. Write `test.sh` that:
+   - Builds all binaries.
+   - Runs a non-interactive `bash -c 'echo hello'` through the forwarder and
+     checks the receiver output.
+   - Verifies JSON protocol validity.
+   - Tests resize handling.
+3. Write `README.md` with:
+   - Architecture overview.
+   - Quick start.
+   - Protocol spec.
+   - Running inside tmux.
+   - Mouse/focus notes.
+   - Limitations.
+
+## Build / test deliverables
+
+### `build.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+mkdir -p bin
+go mod tidy
+go build -o bin/forwarder ./cmd/forwarder
+go build -o bin/receiver  ./cmd/receiver
+go build -o bin/logger    ./cmd/logger
+echo "built bin/forwarder bin/receiver bin/logger"
+```
+
+### `test.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+./build.sh
+
+# Smoke test: non-interactive command
+rm -f /tmp/pty-test.sock
+./bin/forwarder --listen /tmp/pty-test.sock bash -c 'echo smoke-test' &
+pid=$!
+sleep 1
+./bin/receiver /tmp/pty-test.sock | grep -q "smoke-test"
+wait $pid
+echo "smoke test passed"
+
+# Add resize/protocol tests here
+```
+
+### `README.md` outline
+
+- What this example does.
+- Requirements (Go 1.22+, Linux/macOS, tmux for receiver).
+- Build instructions.
+- Running the forwarder and receiver.
+- Running the receiver inside tmux.
+- JSON-RPC protocol reference.
+- Handling resize and mouse.
+- Known limitations.
+
+## Key design decisions
+
+1. **Unix socket by default**, not WebSocket. The consumer is a local tmux
+   receiver, so WebSocket/HTTP is unnecessary overhead.
+
+2. **JSON-RPC line protocol**, not ALiS. Matches the prompt and is easy to
+   debug with `netcat` or `logger`.
+
+3. **Typed event bus + multiple subscribers**, like asciinema. This makes it
+   trivial to add file logging, remote forwarding, or multiple tmux receivers
+   later.
+
+4. **VT emulator for seed screen**, like asciinema. A late tmux receiver does
+   not have to see an empty screen; it receives the current terminal state as
+   an `init` event.
+
+5. **Mouse stays byte-transparent in phase 1**, matching asciinema. If the
+   wrapped application enables mouse reporting, the terminal sends X10/SGR
+   sequences as input bytes; the PTY application reacts; the output changes are
+   mirrored. Explicit `mouse` events are a phase-6 enhancement.
+
+6. **Raw mode + SIGWINCH**, like asciinema. The user's terminal must be raw so
+   keystrokes pass through unchanged, and `SIGWINCH` must resize both the PTY
+   and the tmux receiver.
+
+## Caveats and risks
+
+- **Terminal capability mismatch**: the user's terminal and the tmux receiver
+  may interpret the same ANSI sequence slightly differently. Force
+  `TERM=xterm-256color` in the receiver and tmux.
+
+- **Performance**: every output byte is written twice (to user and to socket)
+  and processed by the VT emulator. Fast curses apps may add CPU load.
+
+- **Binary data**: base64 encoding output increases bandwidth by ~33%. This is
+  fine for a local socket.
+
+- **Mouse event extraction**: parsing X10/SGR sequences from input is fiddly and
+  may miss edge cases. Defer to phase 6.
+
+- **Signal cleanup**: if the forwarder crashes, the Unix socket file and the
+  tmux mirror session may be left behind. Implement deferred cleanup and stale
+  socket removal.
+
+## Verification checklist
+
+- [ ] `bash` and `vim` run correctly through `forwarder`.
+- [ ] Local terminal resize resizes the PTY and emits a `resize` event.
+- [ ] `logger` shows valid JSON events for output, resize, and exit.
+- [ ] `receiver` output matches the local terminal screen.
+- [ ] `receiver` inside tmux shows the same content.
+- [ ] `tmux capture-pane` captures the mirrored screen.
+- [ ] Late receiver receives an `init` event with a seed screen.
+- [ ] `build.sh` and `test.sh` pass.
+- [ ] `README.md` documents usage and protocol.

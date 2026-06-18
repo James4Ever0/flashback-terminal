@@ -1,0 +1,3 @@
+when forwarder is launched, it does not respond to: $COLUMNS $LINES so that terminal size is weird. also it does not respond to terminal resize events. also it does not handle process exit signal. need to exit and forward keyboard interrupt signal?
+
+if we want to faithfully forward and render all terminal events, we would launch the viewer inside the forwarder process before actually launching the underlying shell process like bash, and control the terminal size from the forwarder process.
